@@ -16,14 +16,25 @@ function bool(name: string, fallback: boolean): boolean {
   return v === undefined ? fallback : v === 'true' || v === '1';
 }
 
+const port = int('PORT', 3000);
+
+// Public base URL for links this app mints itself (lead-magnet PDFs).
+// Railway injects RAILWAY_PUBLIC_DOMAIN (bare domain, no scheme) on any
+// service with a public domain; APP_PUBLIC_URL overrides it (custom domain).
+const publicBaseUrl = (
+  process.env.APP_PUBLIC_URL ??
+  (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${port}`)
+).replace(/\/+$/, '');
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   isProd: process.env.NODE_ENV === 'production',
 
   // Railway assigns PORT dynamically. NEVER hardcode a port or bind localhost —
   // the health check hits 0.0.0.0:$PORT and a hardcoded localhost:3000 fails it.
-  port: int('PORT', 3000),
+  port,
   host: '0.0.0.0',
+  publicBaseUrl,
 
   databaseUrl: required('DATABASE_URL'),
   databaseSsl: bool('DATABASE_SSL', false),
@@ -40,13 +51,13 @@ export const env = {
     accessKey: process.env.KARBON_ACCESS_KEY ?? ''
   },
 
-  replit: {
-    url: required('REPLIT_GENERATOR_APP_URL'),
-    serviceSecret: required('REPLIT_SERVICE_SECRET'),
-    timeoutMs: int('REPLIT_TIMEOUT_MS', 90_000) // generous: Replit cold starts
-  },
-
-  openaiApiKey: process.env.OPENAI_API_KEY ?? '',
+  // Content generation — direct OpenAI (ChatGPT API). The Replit offload is
+  // retired (CLAUDE.md rule 6): REPLIT_GENERATOR_APP_URL / REPLIT_SERVICE_SECRET
+  // are gone and OPENAI_API_KEY is now required (blog generation + GPT-4o
+  // distribution copy both use it).
+  openaiApiKey: required('OPENAI_API_KEY'),
+  openaiModel: process.env.OPENAI_MODEL ?? 'gpt-4o',
+  generationTimeoutMs: int('GENERATION_TIMEOUT_MS', 120_000),
 
   wordpress: {
     baseUrl: process.env.WORDPRESS_BASE_URL ?? '',

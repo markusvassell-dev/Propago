@@ -6,7 +6,7 @@ import { env } from '../config/env';
 // and failure semantics are isolated per provider (CLAUDE.md rule 3).
 
 export const QUEUE = {
-  generation: 'replit-generation',
+  generation: 'content-generation', // direct OpenAI (was 'replit-generation' — offload retired)
   wordpress: 'wordpress-publisher',
   metaAds: 'meta-ads',
   activeCampaign: 'activecampaign',

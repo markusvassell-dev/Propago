@@ -4,7 +4,7 @@ import { QUEUE, RATE_LIMITS, QueueName } from '../queues/queues';
 import { env } from '../config/env';
 import { audit, query } from '../db/pool';
 import * as saga from '../saga/orchestrator';
-import { ReplitGenerationAdapter, GenerationError } from '../adapters/ReplitGenerationAdapter';
+import { OpenAIGenerationAdapter, GenerationError } from '../adapters/OpenAIGenerationAdapter';
 import { WordPressAdapter } from '../adapters/WordPressAdapter';
 import { MetaAdsAdapter } from '../adapters/MetaAdsAdapter';
 import { ActiveCampaignAdapter } from '../adapters/ActiveCampaignAdapter';
@@ -18,7 +18,7 @@ import { appendUtm, campaignSlug } from '../utils/utm';
 // The social worker never throws — platform failures are independent and
 // non-blocking by design.
 
-const generation = new ReplitGenerationAdapter();
+const generation = new OpenAIGenerationAdapter();
 const wordpress = new WordPressAdapter();
 const metaAds = new MetaAdsAdapter();
 const activeCampaign = new ActiveCampaignAdapter();
@@ -74,7 +74,7 @@ function mkWorker(
 export function startWorkers(): Worker[] {
   const workers: Worker[] = [];
 
-  // ---- replit-generation ----
+  // ---- content-generation (direct OpenAI — rule 6) ----
   workers.push(
     mkWorker(
       QUEUE.generation,
@@ -89,9 +89,9 @@ export function startWorkers(): Worker[] {
         const run = await saga.runRow(runId);
         const brandVoice = await settingString('brand_voice');
         await audit(runId, 'api', 'generation.dispatched', {
-          endpoint: env.replit.url,
-          auth: 'bearer',
-          timeoutMs: env.replit.timeoutMs,
+          endpoint: `openai:${env.openaiModel}`,
+          auth: 'api-key',
+          timeoutMs: env.generationTimeoutMs,
           brandVoiceChars: brandVoice.length,
           revision: Boolean(revisionNote),
           remake: Boolean(remake),
@@ -104,7 +104,8 @@ export function startWorkers(): Worker[] {
           brandVoice,
           revisionNote,
           remake: Boolean(remake),
-          variant: variantSeq ? { seq: variantSeq, of: variantOf ?? saga.RUNS_PER_TRIGGER } : { seq: run.batch_seq, of: saga.RUNS_PER_TRIGGER }
+          variant: variantSeq ? { seq: variantSeq, of: variantOf ?? saga.RUNS_PER_TRIGGER } : { seq: run.batch_seq, of: saga.RUNS_PER_TRIGGER },
+          runId
         });
         await saga.onGenerationComplete(runId, result);
       },

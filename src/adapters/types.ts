@@ -1,6 +1,6 @@
 // Adapter contracts — the modular-monolith seams. Every external service sits
 // behind one of these interfaces so providers can be swapped without touching
-// the saga (e.g. WordPress → Ghost, Replit generator → direct OpenAI).
+// the saga (e.g. WordPress → Ghost, OpenAI → another model provider).
 
 export interface KarbonTrigger {
   workItemId: string;
@@ -11,7 +11,7 @@ export interface KarbonTrigger {
   tone: string;
 }
 
-// ---------- Content generation (Replit app — CLAUDE.md rule 6) ----------
+// ---------- Content generation (direct OpenAI — CLAUDE.md rule 6) ----------
 export interface GenerationRequest {
   topic: string;
   keywords: string[];
@@ -20,13 +20,14 @@ export interface GenerationRequest {
   revisionNote?: string;     // present when a reviewer looped the draft back
   remake?: boolean;          // reviewer discarded the draft — start fresh, don't tweak
   variant?: { seq: number; of: number }; // fan-out position (1..3): distinct angle per content set
+  runId?: string;            // links stored artifacts (lead-magnet PDF) to the run
 }
 
 export interface GenerationResult {
   blogTitle: string;
   metaDescription: string;
   blogMarkdown: string;      // full 1000+ word post
-  leadMagnetUrl: string;     // public PDF URL served by the generator app
+  leadMagnetUrl: string;     // public PDF URL served by THIS app (/magnets/:id.pdf)
   leadMagnetName: string;
   wordCount: number;
   generatorLatencyMs: number;

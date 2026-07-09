@@ -5,6 +5,7 @@ import { env } from './config/env';
 import { authRouter } from './routes/auth.routes';
 import { apiRouter } from './routes/api.routes';
 import { webhookRouter } from './routes/webhook.routes';
+import { magnetsRouter } from './routes/magnets.routes';
 import { pool } from './db/pool';
 import { redis } from './redis/connection';
 
@@ -28,6 +29,10 @@ export function buildServer(): express.Express {
       res.status(503).json({ ok: false, error: (err as Error).message });
     }
   });
+
+  // Public lead-magnet PDFs (rendered in-process since the Replit offload was
+  // retired) — no auth: these links go out in emails and published posts.
+  app.use('/magnets', magnetsRouter);
 
   app.use('/api/auth', authRouter);
   app.use('/api', apiRouter);
