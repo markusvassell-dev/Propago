@@ -3,7 +3,7 @@ import cookieParser from 'cookie-parser';
 import path from 'path';
 import { env } from './config/env';
 import { authRouter } from './routes/auth.routes';
-import { apiRouter } from './routes/api.routes';
+import { apiRouter, publicLeadsRouter } from './routes/api.routes';
 import { webhookRouter } from './routes/webhook.routes';
 import { magnetsRouter } from './routes/magnets.routes';
 import { pool } from './db/pool';
@@ -35,6 +35,8 @@ export function buildServer(): express.Express {
   app.use('/magnets', magnetsRouter);
 
   app.use('/api/auth', authRouter);
+  // Public lead-capture endpoint (magnet sign-up forms POST here — no auth).
+  app.use('/api/leads', publicLeadsRouter);
   app.use('/api', apiRouter);
 
   // Serve the built React dashboard (single-service topology).

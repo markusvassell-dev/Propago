@@ -6,12 +6,13 @@ import { env } from '../config/env';
 // and failure semantics are isolated per provider (CLAUDE.md rule 3).
 
 export const QUEUE = {
-  generation: 'content-generation', // direct OpenAI (was 'replit-generation' — offload retired)
+  generation: 'content-pipeline', // research + generate + distgen (direct OpenAI — Replit offload retired)
   wordpress: 'wordpress-publisher',
   metaAds: 'meta-ads',
   activeCampaign: 'activecampaign',
   social: 'social-publish',
-  karbonCallback: 'karbon-callback'
+  karbonCallback: 'karbon-callback',
+  scheduler: 'scheduler' // bi-weekly auto-runner repeatable job (spec §8.3)
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -44,8 +45,32 @@ export const queues: Record<QueueName, Queue> = {
   [QUEUE.metaAds]: mkQueue(QUEUE.metaAds),
   [QUEUE.activeCampaign]: mkQueue(QUEUE.activeCampaign),
   [QUEUE.social]: mkQueue(QUEUE.social),
-  [QUEUE.karbonCallback]: mkQueue(QUEUE.karbonCallback)
+  [QUEUE.karbonCallback]: mkQueue(QUEUE.karbonCallback),
+  [QUEUE.scheduler]: mkQueue(QUEUE.scheduler)
 };
+
+// ---- Bi-weekly auto-runner (spec §8.3 / §12): a BullMQ repeatable job. ----
+const SCHED_JOB = 'auto-runner';
+export const SCHED_EVERY_MS = 14 * 24 * 3600 * 1000; // every 2 weeks
+
+export async function configureScheduler(enabled: boolean): Promise<void> {
+  const q = queues[QUEUE.scheduler];
+  const existing = await q.getRepeatableJobs();
+  for (const j of existing) {
+    if (j.name === SCHED_JOB) await q.removeRepeatableByKey(j.key);
+  }
+  if (enabled) {
+    await q.add(SCHED_JOB, {}, { repeat: { every: SCHED_EVERY_MS } });
+  }
+}
+
+/** Next firing timestamp of the auto-runner repeatable job (null when off). */
+export async function schedulerNextRun(): Promise<number | null> {
+  const q = queues[QUEUE.scheduler];
+  const jobs = await q.getRepeatableJobs();
+  const j = jobs.find((x) => x.name === SCHED_JOB);
+  return j?.next ?? null;
+}
 
 /** Enqueue helper — every job carries runId + the acting user for audit stamping. */
 export async function enqueue(

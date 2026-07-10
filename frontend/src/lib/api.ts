@@ -1,11 +1,13 @@
 // Tiny typed fetch wrapper. Cookies carry the session JWT; a 401 kicks the
-// user to /login, a 409 surfaces the saga's concurrency conflicts.
+// user to /login, a 409 surfaces the saga's concurrency conflicts (with the
+// who-handled-it detail feeding the exact §8.2 conflict toasts).
 
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly code: string,
-    message: string
+    message: string,
+    public readonly data: Record<string, unknown> = {}
   ) {
     super(message);
   }
@@ -26,7 +28,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
   const data = (await res.json().catch(() => ({}))) as Record<string, string> & T;
   if (!res.ok) {
-    throw new ApiError(res.status, data.error ?? 'error', data.message ?? `Request failed (${res.status})`);
+    throw new ApiError(res.status, data.error ?? 'error', data.message ?? `Request failed (${res.status})`, data);
   }
   return data;
 }

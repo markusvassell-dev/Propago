@@ -50,8 +50,7 @@ services:
       JWT_SECRET: local-dev-secret-change-me
       MASTER_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       KARBON_WEBHOOK_SECRET: whk_local_dev
-      REPLIT_GENERATOR_APP_URL: https://your-project-name.replit.app/api/generate
-      REPLIT_SERVICE_SECRET: svc_local_dev
+      OPENAI_API_KEY: sk-set-me-for-local-dev
       META_SANDBOX_MODE: "true"
     ports:
       - "3000:3000"

@@ -1,9 +1,10 @@
 import axios from 'axios';
 import { env } from '../config/env';
+import { stubCaptions } from './stubContent';
 
 // Distribution copy generation (CLAUDE.md rules 5 + 7).
-// This is the ONLY direct OpenAI call in the system — blog + lead magnet
-// generation is offloaded to the Replit app (ReplitGenerationAdapter).
+// Blog + lead-magnet generation also calls OpenAI directly
+// (OpenAIGenerationAdapter — the Replit offload is retired).
 // The global brand voice is prepended to the system prompt (rule 7).
 
 export interface MetaAdsPayload {
@@ -36,7 +37,7 @@ export async function generateDistributionPayloads(input: {
   keywords: string[];
   brandVoice: string;
 }): Promise<DistributionPayloads> {
-  if (!env.openaiApiKey) return deterministicFallback(input);
+  if (env.openaiStub) return deterministicFallback(input);
 
   const system = [
     'You write distribution copy for a financial advisory firm.',
@@ -80,7 +81,7 @@ export async function generateDistributionPayloads(input: {
   return parsed;
 }
 
-/** Keeps the pipeline runnable in dev/CI without an OpenAI key. */
+/** Keeps the pipeline runnable in dev/CI without an OpenAI key — copy mirrors the design prototype's mkDist. */
 function deterministicFallback(input: {
   topic: string;
   blogTitle: string;
@@ -88,37 +89,49 @@ function deterministicFallback(input: {
   liveUrl: string;
   leadMagnetUrl: string;
   leadMagnetName: string;
+  keywords: string[];
 }): DistributionPayloads {
-  const t = input.blogTitle || input.topic;
+  const T = input.blogTitle.replace(/: The 2026 Guide$/, '') || input.topic.charAt(0).toUpperCase() + input.topic.slice(1);
+  const magName = input.leadMagnetName.split(' — ')[0] || 'Financial Health Checklist';
+  const teaser = input.metaDescription;
+  const slug3 = input.topic
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, '')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 3)
+    .join('-');
+  const captions = stubCaptions({
+    title: input.blogTitle,
+    teaser,
+    blogUrl: input.liveUrl,
+    keywords: input.keywords
+  });
   return {
     metaAds: {
-      headline: `Free: ${input.leadMagnetName}`.slice(0, 40),
+      headline: `Free: ${magName}`.slice(0, 40),
       primaryText:
-        `Get the checklist our advisory team uses to stabilise cash flow — free download.`.slice(0, 125),
-      link: env.activeCampaign.signupFormUrl
+        'Project income is volatile. Get the 12-point checklist our advisory team uses to stabilise cash flow — free download.'.slice(0, 125),
+      link: env.activeCampaign.signupFormUrl || `elementaccounting.activehosted.com/f/${slug3}`
     },
     acEmail: {
-      subject: `Your ${input.leadMagnetName} (download inside)`,
+      subject: `Your ${magName} (free download inside)`,
       body: [
         'Hi {{ first_name }},',
         '',
-        `New on the blog: ${t}.`,
+        `New on the blog: ${T}.`,
         '',
-        input.metaDescription,
+        teaser,
         '',
-        `Download the ${input.leadMagnetName}:`,
+        `Download the ${magName}:`,
         input.leadMagnetUrl,
         '',
         'Read the full post:',
         input.liveUrl,
         '',
-        '— The Aegis Advisory team'
+        '— The Element Accounting team'
       ].join('\n')
     },
-    social: {
-      linkedin: `New guide: ${t}.\n\n${input.metaDescription}\n\nFull breakdown + the free checklist: ${input.liveUrl}`,
-      facebook: `${t} — new on the blog, plus a free checklist. Read it: ${input.liveUrl}`,
-      instagram: `New on the blog: ${t}. The full guide + free checklist — link in bio.\n\n#AdvisoryFirm #HealthAndSafety`
-    }
+    social: captions
   };
 }

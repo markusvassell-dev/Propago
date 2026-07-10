@@ -20,15 +20,27 @@ webhookRouter.post(
     const idemKey = (req as Request & { idempotencyKey: string }).idempotencyKey;
 
     try {
-      const { runIds } = await createRunFromTrigger({
-        workItemId: payload.workItemId,
-        stageId: payload.stageId,
-        clientName: payload.clientName ?? '',
-        topic: payload.topic,
-        keywords: payload.keywords ?? [],
-        tone: payload.tone ?? 'Authoritative, plainspoken'
-      });
-      res.status(202).json({ ok: true, runIds });
+      const extras = payload as KarbonTriggerPayload & {
+        painPoint?: string;
+        sourceInsight?: string;
+        scheduled?: boolean;
+      };
+      const { runIds, runNos } = await createRunFromTrigger(
+        {
+          workItemId: payload.workItemId,
+          stageId: payload.stageId,
+          clientName: payload.clientName ?? '',
+          topic: payload.topic,
+          keywords: payload.keywords ?? [],
+          tone: payload.tone ?? 'Authoritative, plainspoken'
+        },
+        {
+          painPointHint: extras.painPoint,
+          sourceInsightHint: extras.sourceInsight,
+          scheduled: !!extras.scheduled
+        }
+      );
+      res.status(202).json({ ok: true, runIds, runNos });
     } catch (err) {
       if (err instanceof ConflictError) {
         // DB unique constraint caught a duplicate the Redis key missed

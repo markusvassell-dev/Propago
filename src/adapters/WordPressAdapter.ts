@@ -28,6 +28,7 @@ export class WordPressAdapter implements CmsPublisher {
     metaDescription: string;
     leadMagnetUrl: string;
     existingPostId?: string;
+    topicSlugSource?: string; // slug derives from the TOPIC (spec §2 slug rule), not the title
   }): Promise<CmsPublishResult> {
     if (!env.wordpress.baseUrl) {
       // Structural stub for local dev: log the exact payload we would send.
@@ -37,7 +38,7 @@ export class WordPressAdapter implements CmsPublisher {
         contentBytes: input.markdown.length
       });
       return {
-        liveUrl: `https://elementaccounting.ca/blog/${slugify(input.title)}/`,
+        liveUrl: `https://elementaccounting.ca/blog/${slugify(input.topicSlugSource || input.title)}`,
         cmsPostId: `stub_${Date.now()}`,
         leadMagnetUrl: input.leadMagnetUrl
       };
@@ -80,5 +81,5 @@ export class WordPressAdapter implements CmsPublisher {
 }
 
 function slugify(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().split(/\s+/).slice(0, 6).join('-');
+  return s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().split(/\s+/).slice(0, 5).join('-');
 }

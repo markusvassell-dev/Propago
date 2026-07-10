@@ -23,8 +23,13 @@ const handleOf = (u: UserRow) => `${u.first_name[0].toLowerCase()}.${u.last_name
 // POST /api/auth/login
 authRouter.post('/login', async (req: Request, res: Response) => {
   const { email, password } = (req.body ?? {}) as { email?: string; password?: string };
-  if (!email || !password) {
-    res.status(422).json({ error: 'email_and_password_required' });
+  if (!password) {
+    // Spec §4 (production variant): empty-password copy.
+    res.status(422).json({ error: 'password_required', message: 'Enter your password.' });
+    return;
+  }
+  if (!email) {
+    res.status(422).json({ error: 'email_required', message: 'Enter your email.' });
     return;
   }
 
@@ -32,10 +37,17 @@ authRouter.post('/login', async (req: Request, res: Response) => {
     email.trim().toLowerCase()
   ]);
   const user = rows[0];
-  // Constant-shape failure: same response for unknown email and bad password.
-  const ok = user ? await bcrypt.compare(password, user.password_hash) : false;
-  if (!user || !ok) {
-    res.status(401).json({ error: 'invalid_credentials' });
+  if (!user) {
+    // Invite-only (spec §4): unknown email gets the explicit invite message.
+    res.status(401).json({
+      error: 'unknown_email',
+      message: "Invite-only — that email hasn't been invited. Ask an admin to add you in Settings → Team."
+    });
+    return;
+  }
+  const ok = await bcrypt.compare(password, user.password_hash);
+  if (!ok) {
+    res.status(401).json({ error: 'invalid_credentials', message: 'Incorrect email or password.' });
     return;
   }
 

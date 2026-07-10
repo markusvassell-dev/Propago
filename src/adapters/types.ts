@@ -19,6 +19,7 @@ export interface GenerationRequest {
   brandVoice: string;        // rule 7 — injected into every generation request
   revisionNote?: string;     // present when a reviewer looped the draft back
   remake?: boolean;          // reviewer discarded the draft — start fresh, don't tweak
+  seoFixes?: string[];       // auto-SEO loop: scorer suggestions fed back to the model
   variant?: { seq: number; of: number }; // fan-out position (1..3): distinct angle per content set
   runId?: string;            // links stored artifacts (lead-magnet PDF) to the run
 }
@@ -29,6 +30,7 @@ export interface GenerationResult {
   blogMarkdown: string;      // full 1000+ word post
   leadMagnetUrl: string;     // public PDF URL served by THIS app (/magnets/:id.pdf)
   leadMagnetName: string;
+  leadMagnetText: string;    // flattened magnet content — Uniqueness Registry fingerprint input
   wordCount: number;
   generatorLatencyMs: number;
 }
@@ -53,6 +55,7 @@ export interface CmsPublisher {
     metaDescription: string;
     leadMagnetUrl: string;
     existingPostId?: string; // update-in-place on revision redeploys
+    topicSlugSource?: string; // spec §2 slug rule — slug comes from the topic
   }): Promise<CmsPublishResult>;
 }
 

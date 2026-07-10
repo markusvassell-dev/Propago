@@ -19,6 +19,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   canApprove: boolean; // editors edit; admin/reviewer approve + publish
+  initials: string;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -43,8 +44,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     await api.post('/api/auth/logout').catch(() => undefined);
     setUser(null);
-    window.location.assign('/login');
   };
+
+  const initials = user ? `${user.firstName[0] ?? ''}${user.lastName[0] ?? ''}`.toUpperCase() : '';
 
   return (
     <AuthContext.Provider
@@ -53,7 +55,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         login,
         logout,
-        canApprove: user?.role === 'admin' || user?.role === 'reviewer'
+        canApprove: user?.role === 'admin' || user?.role === 'reviewer',
+        initials
       }}
     >
       {children}

@@ -58,6 +58,14 @@ export const env = {
   openaiApiKey: required('OPENAI_API_KEY'),
   openaiModel: process.env.OPENAI_MODEL ?? 'gpt-4o',
   generationTimeoutMs: int('GENERATION_TIMEOUT_MS', 120_000),
+  // Structural stub mode: OPENAI_API_KEY is still required (fail-fast on a
+  // missing var), but an obvious placeholder (docker-compose local dev / CI)
+  // switches the OpenAI adapters to deterministic stub output so the whole
+  // saga is exercisable end-to-end without spending tokens. A real key is
+  // always used for real calls.
+  openaiStub:
+    /set-me|change-?me|placeholder|xxxx/i.test(process.env.OPENAI_API_KEY ?? '') ||
+    (process.env.OPENAI_API_KEY ?? '').length < 24,
 
   wordpress: {
     baseUrl: process.env.WORDPRESS_BASE_URL ?? '',

@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios';
 import { env } from '../config/env';
 import { ContentGenerationProvider, GenerationRequest, GenerationResult } from './types';
 import { LeadMagnetContent, storeLeadMagnet } from '../services/leadMagnetPdf';
+import { stubGenerate } from '../services/stubContent';
 
 // OpenAIGenerationAdapter (CLAUDE.md rule 6 — direct ChatGPT API; the Replit
 // offload is retired). Runs inside the BullMQ generation worker. Errors are
@@ -37,15 +38,23 @@ export class OpenAIGenerationAdapter implements ContentGenerationProvider {
   async generate(req: GenerationRequest): Promise<GenerationResult> {
     const started = Date.now();
 
-    let out = await this.completeJSON<ModelOutput>([
-      { role: 'system', content: this.systemPrompt(req.brandVoice) },
-      { role: 'user', content: this.userPrompt(req) }
-    ]);
+    // Structural stub mode (placeholder OPENAI_API_KEY): deterministic content
+    // shaped like the prototype's drafts, so local/dev pipelines run end-to-end
+    // without spending tokens. Real keys always take the live path below.
+    let out: ModelOutput;
+    if (env.openaiStub) {
+      out = stubGenerate(req);
+    } else {
+      out = await this.completeJSON<ModelOutput>([
+        { role: 'system', content: this.systemPrompt(req.brandVoice) },
+        { role: 'user', content: this.userPrompt(req) }
+      ]);
+    }
 
     let markdown = out.blogMarkdown ?? '';
 
     // The model sometimes comes up short — expand once before failing the job.
-    if (markdown && wordCount(markdown) < MIN_WORDS) {
+    if (!env.openaiStub && markdown && wordCount(markdown) < MIN_WORDS) {
       const expanded = await this.completeJSON<{ blogMarkdown?: string }>([
         { role: 'system', content: this.systemPrompt(req.brandVoice) },
         {
@@ -94,6 +103,14 @@ export class OpenAIGenerationAdapter implements ContentGenerationProvider {
       blogMarkdown: markdown,
       leadMagnetUrl: stored.url,
       leadMagnetName: stored.name,
+      leadMagnetText: [
+        magnet.name,
+        magnet.subtitle,
+        ...magnet.sections.flatMap((s) => [s.heading, ...s.items]),
+        magnet.cta
+      ]
+        .filter(Boolean)
+        .join('\n'),
       wordCount: words,
       generatorLatencyMs: Date.now() - started
     };
@@ -138,6 +155,9 @@ export class OpenAIGenerationAdapter implements ContentGenerationProvider {
         : '',
       req.revisionNote
         ? `A human reviewer rejected the previous draft with this note — address it fully:\n${req.revisionNote}`
+        : '',
+      req.seoFixes?.length
+        ? `The internal SEO scorer flagged the previous draft below threshold. Apply every one of these fixes in the regenerated post:\n- ${req.seoFixes.join('\n- ')}`
         : ''
     ]
       .filter(Boolean)

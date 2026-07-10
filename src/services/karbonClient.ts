@@ -32,6 +32,12 @@ export async function postTimelineNote(
   subject: string,
   htmlBody: string
 ): Promise<void> {
+  if (!env.karbon.bearerToken) {
+    // Structural stub (Phase 1 — live webhook + timeline land in Phase 3):
+    // log the exact note we would post so the saga is exercisable end-to-end.
+    console.info('[karbon:stub] would post timeline note', { workItemId, subject, bodyBytes: htmlBody.length });
+    return;
+  }
   // Karbon Notes API — notes attached to a work item surface on its timeline.
   await client().post('/Notes', {
     Subject: subject,

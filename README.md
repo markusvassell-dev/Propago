@@ -10,7 +10,7 @@ Full-stack marketing automation hub for a financial advisory firm (Element Accou
 
 ## About the design files (`design/`)
 
-`design/Propago Dashboard.dc.html` (+ `support.js`, `assets/element-logo.png`) is the **high-fidelity interactive design reference** built during the design phase — open it in a browser. It is a prototype showing intended look and behavior, **not production code to copy directly**. Recreate its screens in the React frontend using the skeleton components in `frontend/src/` as the starting point. It is hifi: treat its layout, spacing, copy, states (both review gates, remake/reject actions, audit modal, conflict notices, blog theme preview, dark mode) as the spec.
+`design/Propago Dashboard.dc.html` (+ `support.js`, `assets/element-logo.png`) is the **high-fidelity interactive design reference** built during the design phase — open it in a browser. It is a prototype showing intended look and behavior, **not production code to copy directly**. Recreate its screens in the React frontend using the skeleton components in `frontend/src/` as the starting point. It is hifi: treat its layout, spacing, copy, states (both review gates, remake/reject actions, audit modal, conflict notices, blog theme preview, dark mode) as the spec. **`DESIGN_SPEC.md` is the written contract for that recreation — every design token, copy string, screen and behavior, plus the prototype-simulation → production translation table and the backend deltas. Follow it verbatim; where anything else disagrees with it on UI/UX, DESIGN_SPEC.md wins.**
 
 Dashboard design tokens: bg `#F4F2ED`, card `#FFFFFF`, ink `#1A1D20`, muted `#8A8578`, green `#137A5B`, amber `#B45309`, violet `#5B4FC2`, red `#B3261E`, cyan `#0E7490`; type: Space Grotesk (display), IBM Plex Sans (body), IBM Plex Mono (labels/data). The prototype's dark palette lives in its `THEMES` object.
 
@@ -21,6 +21,7 @@ Dashboard design tokens: bg `#F4F2ED`, card `#FFFFFF`, ink `#1A1D20`, muted `#8A
 ## Repository layout
 
 ```
+DESIGN_SPEC.md                    THE implementation contract — read first (every token, string, screen, behavior)
 db/schema.sql                     Complete PostgreSQL DDL (enums, constraints, indexes, seeds)
 src/
   index.ts                        Entrypoint — binds 0.0.0.0:$PORT, boots API + workers
@@ -35,6 +36,7 @@ src/
   routes/auth.routes.ts           /api/auth/login | logout | me (bcrypt + JWT + sessions)
   routes/api.routes.ts            Runs, review queue, gates (approve/revise/remake/reject),
                                   overrides, settings (409 conflicts)
+  routes/magnets.routes.ts        Public GET /magnets/:id.pdf — lead-magnet delivery links
   saga/orchestrator.ts            Durable saga: guarded Postgres state transitions; RUNS_PER_TRIGGER
   queues/queues.ts                BullMQ queues, retry policy, rate-limit table
   workers/index.ts                Worker processors + terminal-failure handling
@@ -42,9 +44,10 @@ src/
   services/seoScorer.ts           Internal SEO scorer (density/readability/headings/meta)
   services/distributionCopy.ts    GPT-4o distribution payloads (brand voice in system prompt)
   services/blogHtml.ts            Markdown → Element-theme WordPress HTML (rule 12)
+  services/leadMagnetPdf.ts       In-process lead-magnet PDF render + Postgres storage
   adapters/types.ts               ContentGenerationProvider · CmsPublisher · AdPlatform ·
                                   EmailProvider · SocialPublisher interfaces
-  adapters/ReplitGenerationAdapter.ts   External generator over HTTP (Bearer, 90s timeout)
+  adapters/OpenAIGenerationAdapter.ts   Direct OpenAI (ChatGPT API) generation — blog + lead magnet
   adapters/WordPressAdapter.ts    REST publish into the Element site theme, stub mode without creds
   adapters/MetaAdsAdapter.ts      Lead-gen campaign/adset/creative/ad — sandbox mode
   adapters/ActiveCampaignAdapter.ts     Message + campaign send, UTM-rewritten body
@@ -66,6 +69,8 @@ triggered → generating → seo_review ⇄ revision/remake
   any blocking step → failed  (retries exhausted → "Workflow Failed" on Karbon timeline)
 ```
 
+`generating` internally covers four sub-steps the dashboard renders as separate pipeline stages (DESIGN_SPEC.md §2): research (web search + ChatGPT pain-point extraction with the Levenshtein > 0.7 duplicate guard), draft generation, the Uniqueness Registry check (SHA-256 exact + TF-IDF cosine ≥ 0.82 ⇒ blocked and regenerated), and the auto-SEO loop (score < threshold ⇒ suggestions applied and regenerated, max 3 loops).
+
 Every transition is a guarded `UPDATE … WHERE status = <expected>`: a second reviewer, a double-click, or a replayed job gets 0 rows and a `409 Conflict` — never a silent overwrite. Auto-approve (configurable threshold, default 80) applies to gate 1 only.
 
 **Gate 1 actions** (`seo_review`): **Approve** → deploy (admin/reviewer) · **Edit draft** (any role, logged) · **Request revision** with a note → loops to generation (admin/reviewer) · **Remake** → discards the draft and regenerates from scratch, no note (any role — matches the prototype) · **Reject** → terminal, run discarded (admin/reviewer). Rejection posts no Karbon failure note — that's reserved for system failures; it's visible in the dashboard and audit trail.
@@ -77,7 +82,7 @@ Every transition is a guarded `UPDATE … WHERE status = <expected>`: a second r
 3. **API resilience** — BullMQ worker limiters: `activecampaign` 5 req/s, `meta-ads` 10 req/10s (`queues.ts` + `workers/index.ts`).
 4. **Railway** — binds `0.0.0.0`, reads `process.env.PORT` (`index.ts`); `DATABASE_URL`/`REDIS_URL` from Railway plugins.
 5. **Distribution review gate** — GPT-4o payloads (headline ≤40, primary ≤125, IG "link in bio"); saga pauses at `dist_review`; publish jobs are enqueued only by `POST /runs/:id/publish-all`; every field editable, overrides logged. Auto-approve never applies here.
-6. **ReplitGenerationAdapter** — `POST $REPLIT_GENERATOR_APP_URL` with `Authorization: Bearer $REPLIT_SERVICE_SECRET`, 90s timeout for cold starts, clean error classification so BullMQ retries before terminal failure. Request carries `topic, keywords, tone, brandVoice` plus additive `variant {seq, of}` (distinct angle per content set) and `remake` flags — older generator builds ignore them.
+6. **OpenAIGenerationAdapter** — direct OpenAI (ChatGPT API) call inside the BullMQ generation worker; the Replit offload is retired and `OPENAI_API_KEY` is required (`config/env.ts`). Input carries `topic, keywords, tone, brandVoice` plus `variant {seq, of}` (distinct angle per content set) and `remake` flags; output (1000+ word post + lead-magnet content) maps into the existing WorkflowRun/draft schema. API/network errors are classified cleanly so BullMQ's retry policy (3×, exponential) runs before the terminal-failure note posts to the Karbon timeline.
 7. **Brand voice** — `app_settings.brand_voice`, sent as `brandVoice` to the generator and prepended to the GPT-4o system prompt.
 8. **UTM enforcement** — `utils/utm.ts`, applied inside adapters at publish time so manual edits can't strip tracking.
 9. **Dashboard UX** — audit trail feeds the job-log modal (queue, attempts, timestamps, verbatim HTTP errors via `job.failed` events); lead-magnet preview link pre-approval; light/dark theming per the design reference.
@@ -114,8 +119,8 @@ curl -X POST http://localhost:3000/api/webhooks/karbon \
 1. `git init && git add -A && git commit -m "Propago initial"` → push to a new GitHub repo (`.env` is gitignored; commit `.env.example` only).
 2. Railway → **New Project → Deploy from GitHub repo** → select the repo. Railway detects `railway.toml` + `Dockerfile`.
 3. **Add plugins:** New → Database → PostgreSQL, then New → Database → Redis. Railway auto-injects `DATABASE_URL` and `REDIS_URL` into the service.
-4. **Variables tab:** set every secret from `.env.example` (JWT_SECRET, MASTER_ENCRYPTION_KEY, KARBON_*, REPLIT_*, OPENAI_API_KEY, WORDPRESS_*, META_* with `META_SANDBOX_MODE=true`, AC_*, LINKEDIN_*, FB_*, IG_*).
-5. First deploy: run `npm run db:migrate` once via `railway run`, or rely on docker-compose locally + let the deploy serve traffic after the schema exists.
+4. **Variables tab:** set every secret from `.env.example` (JWT_SECRET, MASTER_ENCRYPTION_KEY, KARBON_*, OPENAI_API_KEY, WORDPRESS_*, META_* with `META_SANDBOX_MODE=true`, AC_*, LINKEDIN_*, FB_*, IG_*).
+5. Migration is automatic: `railway.toml`'s start command applies `db/schema.sql` (idempotent) before every boot — no manual migrate step.
 6. Point the Karbon webhook at `https://<service>.up.railway.app/api/webhooks/karbon` (Phase 3) and paste the shared secret into both Karbon and `KARBON_WEBHOOK_SECRET`.
 7. Health check is `/healthz` (verifies Postgres + Redis). If a deploy fails its health check, the usual cause is a missing plugin var — the app fails fast with the exact missing name.
 
@@ -123,7 +128,7 @@ curl -X POST http://localhost:3000/api/webhooks/karbon \
 
 ## Phased rollout (matches the original plan)
 
-- **Phase 1 (live now in this code):** core engine, Replit generation (3 sets per trigger), SEO scorer, review dashboard with remake/reject, WordPress deploy — trigger via the curl above.
+- **Phase 1 (live now in this code):** core engine, direct OpenAI generation (3 sets per trigger), SEO scorer, review dashboard with remake/reject, WordPress deploy — trigger via the curl above.
 - **Phase 2:** set AC_* + LinkedIn/FB/IG creds; toggle adapters on in Settings. Social failures are per-platform and non-blocking.
 - **Phase 3:** Meta app review (`ads_management`, `pages_read_engagement`, `instagram_basic`) → flip `META_SANDBOX_MODE=false`; register the live Karbon webhook.
 

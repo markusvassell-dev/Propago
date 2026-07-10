@@ -3,7 +3,8 @@ import { startWorkers } from './workers';
 import { env } from './config/env';
 import { pool } from './db/pool';
 import { closeRedis } from './redis/connection';
-import { closeQueues } from './queues/queues';
+import { closeQueues, configureScheduler } from './queues/queues';
+import { getSetting } from './services/presets';
 
 // Single-service topology: HTTP API + BullMQ workers in one process. This is
 // the simplest Railway deployment; to scale, run `node dist/index.js --worker`
@@ -13,6 +14,13 @@ const mode = process.argv.includes('--worker') ? 'worker' : process.argv.include
 
 async function main(): Promise<void> {
   const workers = mode !== 'web' ? startWorkers() : [];
+
+  if (mode !== 'web') {
+    // Re-arm (or clear) the bi-weekly auto-runner from the persisted setting.
+    getSetting<boolean>('scheduler_enabled', true)
+      .then((on) => configureScheduler(on))
+      .catch((err) => console.error('[scheduler] configure failed', err.message));
+  }
 
   if (mode !== 'worker') {
     const app = buildServer();

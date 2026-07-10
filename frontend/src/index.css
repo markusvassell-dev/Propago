@@ -2,15 +2,101 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Shared form/action classes used across ReviewQueue + Settings. */
-@layer components {
-  .input {
-    @apply w-full rounded-md border border-stone-300 bg-stone-50 px-3 py-2 text-sm outline-none focus:border-emerald-700 disabled:bg-stone-100 disabled:text-stone-500;
-  }
-  .btn-primary {
-    @apply w-full rounded-lg bg-emerald-800 py-2.5 text-sm font-semibold text-white hover:bg-emerald-900 disabled:cursor-not-allowed disabled:opacity-50;
-  }
-  .btn-danger {
-    @apply w-full rounded-lg border border-red-200 bg-red-50 py-2 text-sm font-medium text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50;
-  }
+/* ── Design tokens (DESIGN_SPEC §1) are applied as CSS custom properties on
+   :root by src/lib/theme.ts (light + dark). Everything below reads var(--*). ── */
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--tx);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 13.5px;
+  -webkit-font-smoothing: antialiased;
 }
+
+::placeholder { color: var(--tx4); }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--line5); border-radius: 6px; border: 2px solid var(--bg); }
+*::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes nfPulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+.nf-pulse { animation: nfPulse 1.4s ease-in-out infinite; }
+
+@keyframes nfToastIn { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* ── shared primitives ── */
+.mono { font-family: 'IBM Plex Mono', monospace; }
+.disp { font-family: 'Space Grotesk', sans-serif; }
+.microlabel {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--tx3);
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.codebox {
+  background: var(--bg4);
+  border: 1px solid var(--line3);
+  border-radius: 7px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--tx2);
+  padding: 8px 10px;
+  line-height: 1.6;
+}
+.nf-input {
+  width: 100%;
+  background: var(--bg2);
+  border: 1px solid var(--line5);
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--tx);
+  outline: none;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.nf-input:focus { border-color: var(--grn); }
+.nf-input:disabled { opacity: .6; }
+textarea.nf-input { resize: vertical; line-height: 1.6; }
+select.nf-input { appearance: auto; }
+
+.btn {
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 9px 16px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  font-family: inherit;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.btn-primary { background: var(--grn); color: #fff; }
+.btn-primary:hover { background: var(--grnH); }
+.btn-ghost { background: transparent; color: var(--tx1); border-color: var(--line5); font-weight: 500; }
+.btn-ghost:hover { background: var(--bg5); }
+.btn-red { background: transparent; color: var(--red); border-color: var(--redL); font-weight: 500; }
+.btn-red:hover { background: var(--red); color: #fff; }
+.btn-redsolid { background: var(--red); color: #fff; }
+.btn-redsolid:hover { background: var(--redH); }
+.btn-ink { background: var(--tx); color: var(--bg2); }
+.btn[disabled] { cursor: not-allowed; }
+.btn-editor-dim { opacity: .45; cursor: not-allowed; }
+
+.pill {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding: 3px 9px;
+  border-radius: 99px;
+  display: inline-block;
+  white-space: nowrap;
+}
+.rowhover:hover { background: var(--bg3); }

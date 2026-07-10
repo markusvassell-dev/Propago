@@ -3,13 +3,17 @@
   "version": "1.1.0",
   "private": true,
   "description": "Propago — marketing automation hub: Karbon-triggered content pipeline with human review gates, WordPress deploy, Meta Ads, ActiveCampaign and organic social publishing. Content generation via direct OpenAI (ChatGPT API).",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "db:migrate": "node dist/scripts/migrate.js",
-    "db:migrate:dev": "ts-node src/scripts/migrate.ts"
+    "db:migrate:dev": "ts-node src/scripts/migrate.ts",
+    "db:seed-demo": "node dist/scripts/seedDemo.js",
+    "db:seed-demo:dev": "ts-node src/scripts/seedDemo.ts"
   },
   "dependencies": {
     "axios": "^1.7.7",

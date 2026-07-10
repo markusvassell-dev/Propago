@@ -1,0 +1,15 @@
+# Propago — Railway deployment config.
+# Railway auto-detects this + the Dockerfile when you deploy from GitHub.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Applies db/schema.sql before boot (idempotent — safe on every restart),
+# so there is NO manual migration step.
+startCommand = "node dist/scripts/migrate.js && node dist/index.js"
+healthcheckPath = "/healthz"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
