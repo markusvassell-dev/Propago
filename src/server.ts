@@ -38,6 +38,9 @@ export function buildServer(): express.Express {
       await withTimeout(redis.ping(), 4000, 'redis');
       res.json({ ok: true });
     } catch (err) {
+      // Railway's healthcheck log only shows "service unavailable" — put the
+      // actual reason in the deploy logs so failures are diagnosable.
+      console.warn(`[healthz] 503 — ${(err as Error).message}`);
       res.status(503).json({ ok: false, error: (err as Error).message });
     }
   });

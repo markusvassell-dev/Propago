@@ -22,8 +22,11 @@ const baseOptions: RedisOptions = {
 /** Shared app client (non-blocking commands only — never BLPOP/BRPOP on this). */
 export const redis = new Redis(env.redisUrl, baseOptions);
 
-redis.on('error', (err) => console.error('[redis] error', err.message));
+redis.on('connect', () => console.info('[redis] tcp connected'));
+redis.on('ready', () => console.info('[redis] ready'));
+redis.on('error', (err) => console.error('[redis] error', (err as NodeJS.ErrnoException).code ?? '', err.message));
 redis.on('reconnecting', () => console.warn('[redis] reconnecting…'));
+redis.on('end', () => console.warn('[redis] connection closed'));
 
 /** Fresh connection factory (BullMQ QueueEvents, subscribers, etc.). */
 export function newRedisConnection(): Redis {
