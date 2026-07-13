@@ -9,6 +9,12 @@ const baseOptions: RedisOptions = {
   maxRetriesPerRequest: null,
   enableReadyCheck: true,
   lazyConnect: false,
+  // Railway's private network is IPv6-only and its Redis plugin resolves to an
+  // internal `*.railway.internal` hostname. ioredis defaults to IPv4-only DNS
+  // (family 4), which fails to resolve that host and leaves the client stuck
+  // "connecting" — every command then hangs. family:0 lets DNS return A or AAAA
+  // records so the internal Redis connects. Harmless on IPv4 hosts / local dev.
+  family: 0,
   retryStrategy: (times: number) => Math.min(times * 200, 5_000), // backoff cap 5s
   reconnectOnError: (err: Error) => err.message.includes('READONLY') // failover support
 };

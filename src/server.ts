@@ -19,11 +19,23 @@ export function buildServer(): express.Express {
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser());
 
-  // Railway health check target. Fails loudly if Postgres/Redis are unreachable.
+  // Railway health check target — verifies Postgres + Redis, but EACH check is
+  // time-boxed. ioredis is configured with maxRetriesPerRequest:null, so a
+  // command issued before the connection is ready would otherwise queue and
+  // hang forever; that would make a single /healthz request never resolve and
+  // Railway's healthcheck time out (deploy killed in a restart loop). With the
+  // timeout, an unready dependency returns a fast 503 instead — Railway retries
+  // every few seconds and the deploy goes green as soon as Redis connects.
+  const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+    Promise.race([
+      p,
+      new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`${label} check timed out after ${ms}ms`)), ms))
+    ]);
+
   app.get('/healthz', async (_req: Request, res: Response) => {
     try {
-      await pool.query('SELECT 1');
-      await redis.ping();
+      await withTimeout(pool.query('SELECT 1'), 4000, 'postgres');
+      await withTimeout(redis.ping(), 4000, 'redis');
       res.json({ ok: true });
     } catch (err) {
       res.status(503).json({ ok: false, error: (err as Error).message });
