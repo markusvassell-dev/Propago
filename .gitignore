@@ -16,3 +16,7 @@ frontend/dist/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Redis dump artifact (local dev)
+dump.rdb
+**/dump.rdb
