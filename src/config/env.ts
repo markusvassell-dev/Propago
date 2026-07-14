@@ -52,6 +52,22 @@ export const env = {
     accessKey: process.env.KARBON_ACCESS_KEY ?? ''
   },
 
+  // Web search / news for the research stage (SerpAPI). Optional: with no key
+  // (or a placeholder) the research stage falls back to today's GPT-only
+  // behaviour — see `serpapiStub` below. `engine` picks the SerpAPI engine:
+  // 'google' (evergreen web results) or 'google_news' (timely/news results).
+  serpapi: {
+    apiKey: process.env.SERPAPI_KEY ?? '',
+    engine: process.env.SERPAPI_ENGINE ?? 'google',
+    resultCount: int('SERPAPI_RESULTS', 5),
+    timeoutMs: int('SERPAPI_TIMEOUT_MS', 12_000)
+  },
+  // No real SerpAPI key configured ⇒ skip the live search and let the research
+  // stage run GPT-only (mirrors `openaiStub`). A real key switches it on.
+  serpapiStub:
+    !(process.env.SERPAPI_KEY ?? '').trim() ||
+    /set-me|change-?me|placeholder|xxxx/i.test(process.env.SERPAPI_KEY ?? ''),
+
   // Content generation — direct OpenAI (ChatGPT API). The Replit offload is
   // retired (CLAUDE.md rule 6): REPLIT_GENERATOR_APP_URL / REPLIT_SERVICE_SECRET
   // are gone and OPENAI_API_KEY is now required (blog generation + GPT-4o

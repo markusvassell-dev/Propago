@@ -48,6 +48,7 @@ src/
   adapters/types.ts               ContentGenerationProvider · CmsPublisher · AdPlatform ·
                                   EmailProvider · SocialPublisher interfaces
   adapters/OpenAIGenerationAdapter.ts   Direct OpenAI (ChatGPT API) generation — blog + lead magnet
+  adapters/SerpApiAdapter.ts      Web/news search for the research stage — stub mode without a key
   adapters/WordPressAdapter.ts    REST publish into the Element site theme, stub mode without creds
   adapters/MetaAdsAdapter.ts      Lead-gen campaign/adset/creative/ad — sandbox mode
   adapters/ActiveCampaignAdapter.ts     Message + campaign send, UTM-rewritten body
@@ -69,7 +70,7 @@ triggered → generating → seo_review ⇄ revision/remake
   any blocking step → failed  (retries exhausted → "Workflow Failed" on Karbon timeline)
 ```
 
-`generating` internally covers four sub-steps the dashboard renders as separate pipeline stages (DESIGN_SPEC.md §2): research (web search + ChatGPT pain-point extraction with the Levenshtein > 0.7 duplicate guard), draft generation, the Uniqueness Registry check (SHA-256 exact + TF-IDF cosine ≥ 0.82 ⇒ blocked and regenerated), and the auto-SEO loop (score < threshold ⇒ suggestions applied and regenerated, max 3 loops).
+`generating` internally covers four sub-steps the dashboard renders as separate pipeline stages (DESIGN_SPEC.md §2): research (SerpAPI web/news search → ChatGPT pain-point extraction with the Levenshtein > 0.7 duplicate guard; with a real `SERPAPI_KEY` the extract is grounded in live sources with real citations, otherwise it runs GPT-only), draft generation, the Uniqueness Registry check (SHA-256 exact + TF-IDF cosine ≥ 0.82 ⇒ blocked and regenerated), and the auto-SEO loop (score < threshold ⇒ suggestions applied and regenerated, max 3 loops).
 
 Every transition is a guarded `UPDATE … WHERE status = <expected>`: a second reviewer, a double-click, or a replayed job gets 0 rows and a `409 Conflict` — never a silent overwrite. Auto-approve (configurable threshold, default 80) applies to gate 1 only.
 
@@ -165,4 +166,4 @@ credentials, keys, or client details in the log.
 - **Phase 2:** set AC_* + LinkedIn/FB/IG creds; toggle adapters on in Settings. Social failures are per-platform and non-blocking.
 - **Phase 3:** Meta app review (`ads_management`, `pages_read_engagement`, `instagram_basic`) → flip `META_SANDBOX_MODE=false`; register the live Karbon webhook.
 
-Until credentials exist, WordPress/Meta/AC/social adapters run in **structural stub mode**: they log the exact payload they would send (UTM already applied) and return synthetic IDs, so the whole saga is exercisable end-to-end on day one.
+Until credentials exist, WordPress/Meta/AC/social adapters run in **structural stub mode**: they log the exact payload they would send (UTM already applied) and return synthetic IDs, so the whole saga is exercisable end-to-end on day one. SerpAPI is the same: no `SERPAPI_KEY` ⇒ the research stage skips live search and extracts the pain point GPT-only, exactly as before. Add the key later to turn real, cited web/news grounding on with no code change.

@@ -3,10 +3,18 @@ import { env } from '../config/env';
 import { query } from '../db/pool';
 import { checkAndRegisterPainPoint } from './registryService';
 import { composePrompt, getSetting, activePreset } from './presets';
+import { SerpApiAdapter, digestHits } from '../adapters/SerpApiAdapter';
 
 // Research stage (DESIGN_SPEC §2.1 rule 2, §13.1): web search + ChatGPT extract
 // ONE pain point, guarded by Levenshtein > 0.7 vs prior research registry
 // entries. Duplicate ⇒ registry row 'duplicate-blocked' ⇒ re-extract.
+//
+// The web-search step is SerpAPI (SerpApiAdapter). With a real SERPAPI_KEY it
+// pulls live results and feeds them into the extract prompt so the pain point
+// is grounded in real, current sources with real citations. With no key it
+// returns [] and the extract runs GPT-only exactly as before.
+
+const webSearch = new SerpApiAdapter();
 
 export interface ResearchResult {
   painPoint: string;
@@ -20,7 +28,12 @@ interface ExtractHint {
   sourceInsight?: string;
 }
 
-async function extractViaOpenAI(topic: string, keywords: string[], avoid: string[]): Promise<{ pain_point: string; source_insight: string }> {
+async function extractViaOpenAI(
+  topic: string,
+  keywords: string[],
+  avoid: string[],
+  searchDigest: string
+): Promise<{ pain_point: string; source_insight: string }> {
   const masterPrompt =
     (await getSetting<string | null>('master_prompt', null)) ??
     composePrompt((await activePreset()).niche, (await activePreset()).audience);
@@ -36,7 +49,10 @@ async function extractViaOpenAI(topic: string, keywords: string[], avoid: string
           role: 'user',
           content:
             `Blog topic context: ${topic}\nKeywords: ${keywords.join(', ')}` +
-            (avoid.length ? `\nAlready-registered pain points to avoid (Levenshtein > 0.7 is a duplicate):\n- ${avoid.join('\n- ')}` : '')
+            (searchDigest
+              ? `\n\nLive web/news search results — base the pain point on what these actually say, and set "source_insight" to a short digest that references the most relevant of them (mention the publisher):\n${searchDigest}`
+              : '') +
+            (avoid.length ? `\n\nAlready-registered pain points to avoid (Levenshtein > 0.7 is a duplicate):\n- ${avoid.join('\n- ')}` : '')
         }
       ]
     },
@@ -72,10 +88,20 @@ export async function runResearch(
   );
   const avoid = rows.map((r) => r.title);
 
+  // Live web/news search once per research run (not per attempt — saves cost and
+  // keeps the source set stable across re-extractions). Empty when GPT-stub mode
+  // or SerpAPI is unconfigured; digest is then '' and the extract runs GPT-only.
+  const searchDigest = env.openaiStub
+    ? ''
+    : digestHits(await webSearch.search({ query: `${topic} ${keywords.join(' ')}`.trim() }));
+  if (searchDigest) {
+    console.info(`[research] ${runId} — grounded on ${searchDigest.split('\n').filter((l) => /^\d+\./.test(l)).length} web/news source(s)`);
+  }
+
   let last: { pain_point: string; source_insight: string } | null = null;
   let lev = 0;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    last = env.openaiStub ? stubExtract(topic, hint, attempt) : await extractViaOpenAI(topic, keywords, avoid);
+    last = env.openaiStub ? stubExtract(topic, hint, attempt) : await extractViaOpenAI(topic, keywords, avoid, searchDigest);
     const check = await checkAndRegisterPainPoint(runId, last.pain_point);
     lev = check.lev;
     if (!check.duplicate) {

@@ -40,6 +40,21 @@ export interface ContentGenerationProvider {
   generate(req: GenerationRequest): Promise<GenerationResult>;
 }
 
+// ---------- Web search / news (SerpAPI default) — research stage grounding ----------
+export interface WebSearchHit {
+  title: string;
+  link: string;
+  snippet: string;
+  source?: string; // publisher / domain
+  date?: string;   // published date when the engine reports one (news)
+}
+
+export interface WebSearchProvider {
+  readonly name: string;
+  readonly stub: boolean; // true ⇒ returns no live results; caller runs GPT-only
+  search(input: { query: string; count?: number }): Promise<WebSearchHit[]>;
+}
+
 // ---------- CMS (WordPress default) ----------
 export interface CmsPublishResult {
   liveUrl: string;
