@@ -6,9 +6,16 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# Applies db/schema.sql before boot (idempotent — safe on every restart),
-# so there is NO manual migration step.
-startCommand = "node dist/scripts/migrate.js && node dist/index.js"
+# Migration runs in its OWN pre-deploy container (idempotent — safe every
+# release), fully decoupled from the server start. Previously the two were
+# chained (`migrate && index.js`) in startCommand; when pool.end() hung against
+# Railway's networked Postgres the migration never exited, so the HTTP server
+# never bound and the /healthz healthcheck timed out. Separating them means the
+# server (and its healthcheck) can never be blocked by the migration.
+preDeployCommand = "node dist/scripts/migrate.js"
+# startCommand starts ONLY the HTTP server. src/index.ts binds 0.0.0.0:$PORT and
+# serves /healthz within ~1s of boot.
+startCommand = "node dist/index.js"
 healthcheckPath = "/healthz"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
