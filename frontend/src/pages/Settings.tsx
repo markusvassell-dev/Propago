@@ -54,16 +54,21 @@ export default function Settings() {
     return true;
   };
 
+  const [inviteLink, setInviteLink] = useState('');
   const invite = async () => {
     const first = inv.first.trim(); const email = inv.email.trim().toLowerCase();
     if (!first || !email) { setInvMsg({ text: 'First name and email are required.', ok: false }); return; }
     if (email.indexOf('@') < 1) { setInvMsg({ text: 'Enter a valid email address.', ok: false }); return; }
     try {
-      await api.post('/api/users', { first, last: inv.last.trim(), email, role: inv.role });
+      const r = await api.post<{ setPasswordPath: string }>('/api/users', {
+        first, last: inv.last.trim(), email, role: inv.role
+      });
       setInv({ first: '', last: '', email: '', role: 'editor' });
-      setInvMsg({ text: `Invited ${first} as ${inv.role} — they can sign in once they set a password.`, ok: true });
+      setInviteLink(`${window.location.origin}${r.setPasswordPath}`);
+      setInvMsg({ text: `Invited ${first} as ${inv.role}. Share the set-password link below — they set a password, then sign in.`, ok: true });
       await load();
     } catch (err) {
+      setInviteLink('');
       if (err instanceof ApiError && (err.status === 409 || err.status === 400)) setInvMsg({ text: err.message, ok: false });
       else setInvMsg({ text: 'Invite failed — try again.', ok: false });
     }
@@ -263,6 +268,18 @@ export default function Settings() {
                 <button className="btn btn-primary" style={{ padding: '7px 16px' }} onClick={invite}>Invite</button>
               </div>
               {invMsg && <div style={{ fontSize: 11, marginTop: 8, color: invMsg.ok ? 'var(--grn)' : 'var(--amb)', lineHeight: 1.5 }}>{invMsg.text}</div>}
+              {inviteLink && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+                  <div className="codebox" style={{ flex: 1, overflowX: 'auto', whiteSpace: 'nowrap' }}>{inviteLink}</div>
+                  <button
+                    className="btn btn-ghost"
+                    style={{ padding: '7px 12px', fontSize: 11.5 }}
+                    onClick={() => navigator.clipboard?.writeText(inviteLink).catch(() => undefined)}
+                  >
+                    Copy
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

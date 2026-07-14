@@ -6,6 +6,7 @@ import { query } from '../db/pool';
 import { redis } from '../redis/connection';
 import { env } from '../config/env';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { createResetToken } from './auth.routes';
 import {
   approveDraft,
   requestRevision,
@@ -398,13 +399,15 @@ apiRouter.post(
       res.status(409).json({ error: 'duplicate_email', message: 'That email is already on the team.' });
       return;
     }
-    // Temporary password, returned exactly once in the invite response (§12).
-    const tempPassword = randomBytes(9).toString('base64url');
-    const hash = await bcrypt.hash(tempPassword, 10);
+    // Create the account with an UNUSABLE random password (a bcrypt hash of
+    // random bytes that is never revealed) so it can only be logged into after
+    // the invitee sets their own via the single-use set-password link below.
+    const unusable = await bcrypt.hash(randomBytes(24).toString('base64url'), 10);
     const { rows } = await query<{ id: string }>(
       `INSERT INTO users (email, password_hash, first_name, last_name, role) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [em, hash, f, l, role]
+      [em, unusable, f, l, role]
     );
+    const token = await createResetToken(rows[0].id, 'invite');
     res.status(201).json({
       user: {
         id: rows[0].id,
@@ -415,8 +418,26 @@ apiRouter.post(
         email: em,
         role
       },
-      tempPassword
+      // Returned ONCE. Share this link with the invitee; they set their own
+      // password and can then log in. (Wire to an email send in production.)
+      setPasswordToken: token,
+      setPasswordPath: `/set-password?token=${token}`
     });
+  })
+);
+
+// Admin-triggered password reset for an existing team member (spec: reset flow).
+apiRouter.post(
+  '/users/:id/reset-password',
+  requireRole('admin'),
+  wrap(async (req, res) => {
+    const { rows } = await query<{ id: string }>('SELECT id FROM users WHERE id = $1', [req.params.id]);
+    if (!rows.length) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const token = await createResetToken(rows[0].id, 'reset');
+    res.json({ ok: true, setPasswordToken: token, setPasswordPath: `/set-password?token=${token}` });
   })
 );
 

@@ -39,7 +39,16 @@ export class ConflictError extends Error {
 export const ACCT_STATUS = 'Ready for Accountant Revi';
 export const FAIL_LOG = 'Automation Issue - Manual';
 
-export const RUNS_PER_TRIGGER = 3;
+// One Karbon trigger fans out to exactly this many content sets — each a blog
+// post + one lead magnet — so it is also the hard cap on lead magnets (and thus
+// AI generations) per trigger. Sourced from env (MAX_LEAD_MAGNETS_PER_KARBON_TRIGGER,
+// clamped 1..3) so spend can be dialed down without a code change. The Redis
+// SETNX idempotency lock + the DB unique constraint on (karbon_work_id,
+// karbon_stage_id, batch_seq) still guarantee a replayed/duplicate event can
+// never exceed this, regardless of the value.
+export const MAX_LEAD_MAGNETS_PER_KARBON_TRIGGER = env.workflow.maxLeadMagnetsPerTrigger;
+/** Back-compat alias — same value; keep both so existing imports don't break. */
+export const RUNS_PER_TRIGGER = MAX_LEAD_MAGNETS_PER_KARBON_TRIGGER;
 
 export const wfId = (runNo: number): string => `WF-${runNo}`;
 
@@ -111,6 +120,13 @@ export async function createRunFromTrigger(
   if (runs.length === 0) {
     throw new ConflictError('Runs already exist for this work item + stage (idempotency backstop)');
   }
+
+  // Cost visibility (no PII / secrets — work-item id + counts only): how many
+  // lead magnets this trigger was allowed to create vs. how many it actually
+  // started. A replayed event lands in the ConflictError above (0 created).
+  console.info(
+    `[karbon-trigger] ${t.workItemId}:${t.stageId} — lead magnets requested (cap): ${MAX_LEAD_MAGNETS_PER_KARBON_TRIGGER}, created this delivery: ${runs.length}`
+  );
 
   for (const run of runs) {
     await auditMsg(

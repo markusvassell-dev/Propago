@@ -275,3 +275,18 @@ INSERT INTO app_settings (key, value) VALUES
     {"key":"yyc","label":"Calgary small business (28–65)","niche":"Calgary-based small business owners","audience":"Small business owners aged 28–65","region":"Calgary, AB","builtin":true}
   ]')
 ON CONFLICT (key) DO NOTHING;
+
+-- ---------- password_reset_tokens (self-service set / reset password) ----------
+-- Invited users and password resets flow through here. We store ONLY a SHA-256
+-- hash of the single-use token (never the raw token, never a password). The raw
+-- token is returned once at creation time and delivered out-of-band (link).
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash  TEXT NOT NULL UNIQUE,            -- sha256(rawToken) hex
+  purpose     TEXT NOT NULL DEFAULT 'invite' CHECK (purpose IN ('invite','reset')),
+  expires_at  TIMESTAMPTZ NOT NULL,
+  used_at     TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_reset_tokens_user ON password_reset_tokens(user_id, created_at DESC);

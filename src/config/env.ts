@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { clampInt } from '../utils/num';
 
 function required(name: string): string {
   const v = process.env[name];
@@ -99,6 +100,18 @@ export const env = {
   workflow: {
     seoAutoApproveThreshold: int('SEO_AUTO_APPROVE_THRESHOLD', 80),
     autoApproveEnabled: bool('AUTO_APPROVE_ENABLED', false),
-    maxJobAttempts: int('MAX_JOB_ATTEMPTS', 3)
+    maxJobAttempts: int('MAX_JOB_ATTEMPTS', 3),
+
+    // ---- AI-usage / spend controls (one Karbon trigger => this many content
+    // sets, each one blog post + one lead magnet). Clamped to 1..3: the design
+    // and the DB idempotency constraint (karbon_work_id, karbon_stage_id,
+    // batch_seq) guarantee a replayed event can never add a 4th. Lower it to
+    // spend less per trigger. ----
+    maxLeadMagnetsPerTrigger: clampInt(process.env.MAX_LEAD_MAGNETS_PER_KARBON_TRIGGER, 1, 3, 3),
+
+    // Max auto-SEO regeneration loops per run before it goes to the human gate
+    // regardless of score. Each loop is one extra OpenAI generation call, so
+    // lowering this trims spend. Clamped 0..3. ----
+    seoMaxAutoLoops: clampInt(process.env.SEO_MAX_AUTOLOOPS, 0, 3, 3)
   }
 };

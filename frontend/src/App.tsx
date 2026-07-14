@@ -3,6 +3,7 @@ import { useAuth } from './context/AuthContext';
 import { AppProvider } from './context/AppContext';
 import Shell from './components/Shell';
 import Login from './pages/Login';
+import SetPassword from './pages/SetPassword';
 import Runs from './pages/Runs';
 import RunDetail from './pages/RunDetail';
 import Orchestrator from './pages/Orchestrator';
@@ -41,13 +42,16 @@ export default function App() {
     );
   }
 
-  if (!user && loc.pathname !== '/login') return <Navigate to="/login" replace />;
+  // Public routes reachable while signed out (invited users arrive here logged out).
+  const PUBLIC = ['/login', '/set-password'];
+  if (!user && !PUBLIC.includes(loc.pathname)) return <Navigate to="/login" replace />;
   if (user && loc.pathname === '/login') return <Navigate to="/runs" replace />;
 
   if (!user) {
     return (
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/set-password" element={<SetPassword />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );

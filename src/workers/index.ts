@@ -555,7 +555,7 @@ async function jobGenerate(job: Job): Promise<void> {
   const th = await threshold();
   const auto = await autoApprove();
 
-  if (seo.total < th && run.seo_loops < 3) {
+  if (seo.total < th && run.seo_loops < env.workflow.seoMaxAutoLoops) {
     const loop = run.seo_loops + 1;
     const applied = seo.suggestions.slice();
     await query(
@@ -571,7 +571,7 @@ async function jobGenerate(job: Job): Promise<void> {
     await auditMsg(
       runId,
       'system',
-      `Auto-SEO loop ${loop}/3 — score ${seo.total} below threshold ${th}. Applying ${applied.length} suggestion${applied.length === 1 ? '' : 's'} and regenerating:`,
+      `Auto-SEO loop ${loop}/${env.workflow.seoMaxAutoLoops} — score ${seo.total} below threshold ${th}. Applying ${applied.length} suggestion${applied.length === 1 ? '' : 's'} and regenerating:`,
       'seo.autoloop'
     );
     for (const s of applied) await auditMsg(runId, 'system', `   → ${s}`, 'seo.autoloop.fix');
@@ -593,7 +593,7 @@ async function jobGenerate(job: Job): Promise<void> {
   const passNote =
     seo.total >= th
       ? `SEO ${seo.total}/100 ≥ threshold ${th} · ${sugN} suggestion${sugN === 1 ? '' : 's'}${run.seo_loops ? ` · passed after ${run.seo_loops} auto-loop${run.seo_loops > 1 ? 's' : ''}` : ''}`
-      : `SEO ${seo.total}/100 < threshold ${th} · ${sugN} suggestion${sugN === 1 ? '' : 's'} · 3 auto-loops exhausted`;
+      : `SEO ${seo.total}/100 < threshold ${th} · ${sugN} suggestion${sugN === 1 ? '' : 's'} · ${env.workflow.seoMaxAutoLoops} auto-loops exhausted`;
   await endStage(runId, 'seo', 'done', passNote);
   await auditMsg(runId, 'system', `SEO score ${seo.total}/100 · ${sugN} suggestion${sugN === 1 ? '' : 's'}`, 'seo.scored');
 

@@ -114,6 +114,39 @@ curl -X POST http://localhost:3000/api/webhooks/karbon \
 # Send it twice: the second delivery returns {"duplicate":true} — idempotency in action.
 ```
 
+## Access & set-password flow
+
+Login is email + password (bcrypt cost 10, JWT session in Redis). Passwords are
+never stored in plaintext and never logged. Invited users set their own password
+instead of receiving a temporary one:
+
+1. An admin invites a user (`POST /api/users`). The account is created with an
+   **unusable** password hash and a single-use, SHA-256-hashed token
+   (`password_reset_tokens`, `purpose='invite'`, 7-day TTL). The response returns
+   `setPasswordPath` (e.g. `/set-password?token=…`) — Settings shows a copyable link.
+2. The user opens `/set-password?token=…`, chooses a password (min 8 chars, letter +
+   digit), and posts to `POST /api/auth/set-password`. The token is validated by hash
+   lookup (unused + unexpired), the password is bcrypt-hashed, all outstanding tokens
+   for that user are consumed, and existing sessions are revoked.
+3. `POST /api/users/:id/reset-password` (admin) mints a fresh reset link the same way.
+
+Only the token **hash** is stored; the raw token is shown once at creation and never
+logged. Roles/permissions are unchanged by this flow — the invited role is what the
+user has on first login.
+
+## AI-usage / spend controls
+
+Two env vars cap per-trigger OpenAI spend (both clamped, so a bad value can't blow the
+budget):
+
+| Var | Range | Default | Effect |
+| --- | --- | --- | --- |
+| `MAX_LEAD_MAGNETS_PER_KARBON_TRIGGER` | 1–3 | 3 | Lead magnets (and content sets) created per Karbon delivery. The DB idempotency constraint guarantees a replayed webhook can never add a 4th. Lower it to spend less per trigger. |
+| `SEO_MAX_AUTOLOOPS` | 0–3 | 3 | Max auto-SEO regeneration loops per run before it goes to the human gate. Each loop is one extra generation call; `0` disables auto-remake entirely. |
+
+Each delivery logs `lead magnets requested (cap): N, created this delivery: M` — no
+credentials, keys, or client details in the log.
+
 ## GitHub → Railway deployment
 
 1. `git init && git add -A && git commit -m "Propago initial"` → push to a new GitHub repo (`.env` is gitignored; commit `.env.example` only).
