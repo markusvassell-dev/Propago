@@ -290,3 +290,24 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_reset_tokens_user ON password_reset_tokens(user_id, created_at DESC);
+
+-- ---------- karbon_work_events (native Work-webhook idempotency + state) ----------
+-- One row per (work item + activation status + status version). The UNIQUE
+-- constraint is the idempotency backstop: Karbon retries / duplicate Work
+-- webhooks for the same activation can only ever insert once, so Propago is
+-- never triggered twice for the same status transition. `state` tracks the
+-- batch, and `completed_notified_at` guards the single completion status write
+-- back to Karbon (so the 3 runs in a batch don't push it 3 times).
+CREATE TABLE IF NOT EXISTS karbon_work_events (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  work_item_key         TEXT NOT NULL,          -- Karbon WorkItemKey / ResourcePermaKey
+  activation_status     TEXT NOT NULL,          -- the status that armed this run
+  status_version        TEXT NOT NULL,          -- LastActivity/version stamp for dedup
+  state                 TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','running','complete','failed')),
+  run_ids               JSONB NOT NULL DEFAULT '[]',
+  completed_notified_at TIMESTAMPTZ,            -- guard: status pushed back to Karbon once
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT uq_karbon_work_event UNIQUE (work_item_key, activation_status, status_version)
+);
+CREATE INDEX IF NOT EXISTS idx_karbon_work_events_item ON karbon_work_events(work_item_key, created_at DESC);

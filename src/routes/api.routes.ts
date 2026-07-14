@@ -20,6 +20,7 @@ import {
 } from '../saga/orchestrator';
 import { registryStats } from '../services/registryService';
 import { fireSimulatedTrigger } from '../services/triggerService';
+import { processWorkEvent } from '../services/karbonWork';
 import { configureScheduler, schedulerNextRun, QUEUE, enqueue } from '../queues/queues';
 import { mapRun, RunApiRow, RUN_SELECT } from './mappers';
 
@@ -219,6 +220,29 @@ apiRouter.post(
       runNos: out.runNos ?? [],
       wfIds: (out.runNos ?? []).map((n) => `WF-${n}`)
     });
+  })
+);
+
+// ---- Simulate a native Karbon Work webhook (admin test harness) ----
+// Runs a sample (or supplied) Karbon Work payload through the SAME decision
+// path as the live /api/webhooks/karbon/work endpoint — bypassing only the
+// signature — so you can verify status matching + triggering without wiring
+// Karbon. Body: { payload?: object } (defaults to a "Ready for Propago" sample).
+apiRouter.post(
+  '/simulate-work-webhook',
+  requireRole('admin'),
+  wrap(async (req, res) => {
+    const payload =
+      (req.body && typeof req.body === 'object' && (req.body as { payload?: unknown }).payload) ||
+      {
+        ResourcePermaKey: `TEST-${Date.now().toString().slice(-6)}`,
+        PrimaryStatus: env.karbon.triggerStatus,
+        Title: 'Test — cash flow forecasting for clinics',
+        ClientName: 'Test Client'
+      };
+    const permaKey = (payload as { ResourcePermaKey?: string }).ResourcePermaKey ?? '';
+    const out = await processWorkEvent({ permaKey, payload });
+    res.json({ ok: true, ...out });
   })
 );
 

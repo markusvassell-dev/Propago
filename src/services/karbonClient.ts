@@ -26,6 +26,39 @@ function client(): AxiosInstance {
   });
 }
 
+/** Fetch the full Work Item by its ResourcePermaKey (GET /WorkItems/{key}). */
+export async function getWorkItem(permaKey: string): Promise<Record<string, unknown> | null> {
+  if (!env.karbon.bearerToken) {
+    console.info('[karbon:stub] would GET WorkItem', { permaKey });
+    return null; // stub mode — caller falls back to webhook payload fields only
+  }
+  const res = await client().get(`/WorkItems/${encodeURIComponent(permaKey)}`);
+  return res.data as Record<string, unknown>;
+}
+
+/**
+ * Set a Work Item's status back in Karbon (PUT /WorkItems/{key}). Best-effort:
+ * Karbon exposes several status fields depending on account config, so we send
+ * WorkStatus and (when the account uses them) the secondary status. Returns
+ * true on a successful write, false in stub mode / on a swallowed error — the
+ * caller always has the Timeline note as the durable record either way.
+ */
+export async function setWorkItemStatus(
+  permaKey: string,
+  status: string,
+  opts: { secondary?: boolean } = {}
+): Promise<boolean> {
+  if (!env.karbon.bearerToken) {
+    console.info('[karbon:stub] would set WorkItem status', { permaKey, status });
+    return false;
+  }
+  const body: Record<string, unknown> = opts.secondary
+    ? { SecondaryStatus: status }
+    : { WorkStatus: status };
+  await client().put(`/WorkItems/${encodeURIComponent(permaKey)}`, body);
+  return true;
+}
+
 /** Low-level: post one timeline note against a work item. */
 export async function postTimelineNote(
   workItemId: string,

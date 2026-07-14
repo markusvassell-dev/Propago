@@ -115,6 +115,43 @@ curl -X POST http://localhost:3000/api/webhooks/karbon \
 # Send it twice: the second delivery returns {"duplicate":true} — idempotency in action.
 ```
 
+## Karbon native Work webhook (automatic trigger)
+
+Two inbound webhook routes exist:
+
+- `POST /api/webhooks/karbon` — our **internal** shape (`workItemId, stageId, topic…`), signed with `KARBON_WEBHOOK_SECRET`. Used by the simulate curl above.
+- `POST /api/webhooks/karbon/work` — Karbon's **native** Work webhook (`WebhookType="Work"`). This is the hands-off automation: Karbon fires it on any Work Item update, Propago fetches the item, and triggers **only** when the item is at the activation status.
+
+**How the native flow works:** ack fast (Karbon cancels slow/erroring subscriptions) → verify the signature if `KARBON_WEBHOOK_SIGNING_KEY` is set → process async on the `karbon-inbound` queue: read `ResourcePermaKey` → `GET /v3/WorkItems/{key}` → check `PrimaryStatus`/`SecondaryStatus`/`WorkStatus` against `PROPAGO_TRIGGER_STATUS` → idempotency row in `karbon_work_events` (one batch per work item + activation status + version) → trigger the 3-content-set batch. When the batch finishes, Propago writes `PROPAGO_COMPLETE_STATUS` back to the item **once** and posts a Timeline note. Because it only triggers on the *activation* status, the completion write-back can't loop, and a failed batch is never marked complete (it sets `PROPAGO_ERROR_STATUS` if configured).
+
+**Env vars:** `KARBON_AUTH_TOKEN`, `KARBON_ACCESS_KEY` (API auth), `KARBON_WEBHOOK_SIGNING_KEY` (verify inbound), `PROPAGO_TRIGGER_STATUS`, `PROPAGO_COMPLETE_STATUS`, and optional `PROPAGO_ERROR_STATUS`.
+
+**Create / check the subscription** (Karbon API — needs the same auth headers):
+
+```bash
+# Create a Work webhook subscription pointing at your deployment:
+curl -X POST "$KARBON_API_BASE/WebhookSubscriptions" \
+  -H "Authorization: Bearer $KARBON_AUTH_TOKEN" -H "AccessKey: $KARBON_ACCESS_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"WebhookType":"Work","TargetUrl":"https://<your-app>.up.railway.app/api/webhooks/karbon/work"}'
+# The response includes a SigningKey — put it in KARBON_WEBHOOK_SIGNING_KEY and redeploy.
+
+# List existing subscriptions to confirm it's active:
+curl "$KARBON_API_BASE/WebhookSubscriptions" \
+  -H "Authorization: Bearer $KARBON_AUTH_TOKEN" -H "AccessKey: $KARBON_ACCESS_KEY"
+```
+
+**Test it without Karbon** — admin-authenticated route that runs a sample (or supplied) payload through the exact same decision path (signature aside):
+
+```bash
+# Uses a default "Ready for Propago" sample; or POST {"payload": { …Karbon Work fields… }}
+curl -X POST https://<your-app>.up.railway.app/api/simulate-work-webhook \
+  -H "Content-Type: application/json" -b cookies.txt   # admin session cookie
+# → { ok:true, triggered:true, reason:"triggered", runIds:[…3…] }
+```
+
+A sample native payload lives at `tests/fixtures/karbonWorkWebhook.json`.
+
 ## Access & set-password flow
 
 Login is email + password (bcrypt cost 10, JWT session in Redis). Passwords are

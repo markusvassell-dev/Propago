@@ -12,6 +12,7 @@ export const QUEUE = {
   activeCampaign: 'activecampaign',
   social: 'social-publish',
   karbonCallback: 'karbon-callback',
+  karbonInbound: 'karbon-inbound', // native Work-webhook events processed async (fetch → decide → trigger)
   scheduler: 'scheduler' // bi-weekly auto-runner repeatable job (spec §8.3)
 } as const;
 
@@ -46,6 +47,7 @@ export const queues: Record<QueueName, Queue> = {
   [QUEUE.activeCampaign]: mkQueue(QUEUE.activeCampaign),
   [QUEUE.social]: mkQueue(QUEUE.social),
   [QUEUE.karbonCallback]: mkQueue(QUEUE.karbonCallback),
+  [QUEUE.karbonInbound]: mkQueue(QUEUE.karbonInbound),
   [QUEUE.scheduler]: mkQueue(QUEUE.scheduler)
 };
 

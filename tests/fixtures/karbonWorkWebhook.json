@@ -1,0 +1,15 @@
+{
+  "ResourcePermaKey": "3aBcQ2WorkItemPermaKeyExample",
+  "ResourceType": "WorkItem",
+  "EventType": "Updated",
+  "PrimaryStatus": "Ready for Propago",
+  "SecondaryStatus": "",
+  "WorkStatus": "In Progress",
+  "Title": "Q3 blog — cash flow forecasting for occupational health providers",
+  "ClientName": "Halcyon Occupational Health",
+  "WorkType": "Marketing Content",
+  "AssigneeEmailAddress": "jmercer@elementaccounting.ca",
+  "DueDate": "2026-08-01",
+  "LastActivityDate": "2026-07-14T15:30:00Z",
+  "Description": "Marketing content run: blog post + lead magnet."
+}

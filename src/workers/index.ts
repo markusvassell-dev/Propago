@@ -12,6 +12,7 @@ import { MetaAdsAdapter } from '../adapters/MetaAdsAdapter';
 import { ActiveCampaignAdapter } from '../adapters/ActiveCampaignAdapter';
 import { LinkedInPublisher, FacebookPublisher, InstagramPublisher } from '../adapters/SocialAdapters';
 import { postCompletionNote, postFailureNote } from '../services/karbonClient';
+import { processWorkEvent, onRunSettledForKarbon } from '../services/karbonWork';
 import { runResearch } from '../services/research';
 import { checkAndRegisterAsset } from '../services/registryService';
 import { scoreSeo } from '../services/seoScorer';
@@ -385,6 +386,9 @@ export function startWorkers(): Worker[] {
           const stages = await getStages(runId);
           const partial = stages[stageIndex('social')]?.status === 'partial';
           await auditMsg(runId, 'system', `Workflow complete — all jobs succeeded${partial ? ' (1 partial)' : ''}`, 'run.complete');
+          // Native Work-webhook batches: write the completion status back to
+          // Karbon once the whole batch has settled (no-op for other triggers).
+          await onRunSettledForKarbon(runId).catch((e) => console.warn('[karbon-work] settle(success) failed (non-fatal):', e));
         } else {
           const failure = run.error as { message?: string; httpStatus?: number; responseBody?: string; attempts?: number } | null;
           await postFailureNote(run.karbon_work_id, run.topic, {
@@ -401,9 +405,27 @@ export function startWorkers(): Worker[] {
             'karbon.failure_note_posted'
           );
           await saga.onCallbackComplete(runId, 'failure');
+          // Settle the native Work-webhook batch: sets PROPAGO_ERROR_STATUS (if
+          // configured) — never marks the work item complete on failure.
+          await onRunSettledForKarbon(runId).catch((e) => console.warn('[karbon-work] settle(failure) failed (non-fatal):', e));
         }
       },
       { blocking: false } // never terminal-fail a run because the notification failed
+    )
+  );
+
+  // ---- karbon-inbound (native Work webhook → fetch → decide → trigger) ----
+  workers.push(
+    mkWorker(
+      QUEUE.karbonInbound,
+      async (job) => {
+        const { permaKey, payload } = job.data as { permaKey: string; payload?: unknown };
+        const out = await processWorkEvent({ permaKey, payload });
+        // Throwing here would make BullMQ retry; processWorkEvent only throws on
+        // genuine faults (fetch/DB), which is exactly when a retry is wanted.
+        return out.reason;
+      },
+      { blocking: false }
     )
   );
 

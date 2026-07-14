@@ -1,7 +1,10 @@
 import { Router, Request, Response, raw } from 'express';
 import { verifyKarbonSignature } from '../middleware/karbonHmac';
+import { verifyKarbonWebhookSignature } from '../middleware/karbonWebhookSig';
 import { karbonIdempotency, releaseIdempotencyKey, KarbonTriggerPayload } from '../middleware/idempotency';
 import { createRunFromTrigger, ConflictError } from '../saga/orchestrator';
+import { enqueue, QUEUE } from '../queues/queues';
+import { extractResourcePermaKey } from '../services/karbonWork';
 
 export const webhookRouter = Router();
 
@@ -54,5 +57,41 @@ webhookRouter.post(
       console.error('[webhook:karbon]', err);
       res.status(500).json({ error: 'trigger_failed' });
     }
+  }
+);
+
+// POST /api/webhooks/karbon/work
+// Karbon's NATIVE Work webhook (WebhookType="Work"). Fires on ANY work item
+// update, so it must: ack fast (Karbon cancels a subscription that is slow or
+// errors), verify Karbon's signature when a signing key is set, then hand the
+// event to the karbon-inbound worker which fetches the full work item, checks
+// the activation status, and (only then) triggers Propago. All the real work is
+// async on purpose — the HTTP response here is just an acknowledgement.
+webhookRouter.post(
+  '/karbon/work',
+  raw({ type: '*/*', limit: '256kb' }), // Buffer body for signature verification
+  verifyKarbonWebhookSignature,
+  async (req: Request, res: Response) => {
+    let payload: unknown;
+    try {
+      payload = JSON.parse((req.body as Buffer).toString('utf8'));
+    } catch {
+      res.status(400).json({ error: 'invalid_json' });
+      return;
+    }
+
+    const permaKey = extractResourcePermaKey(payload);
+    if (!permaKey) {
+      // Ack with 200 (not an error) so Karbon doesn't retry an event we simply
+      // can't act on — e.g. a webhook shape without a work-item resource key.
+      console.warn('[karbon-work] webhook received with no ResourcePermaKey — acknowledged, ignored');
+      res.status(200).json({ ok: true, ignored: 'no_resource_key' });
+      return;
+    }
+
+    // Enqueue and return immediately. The worker owns fetch → decide → trigger.
+    await enqueue(QUEUE.karbonInbound, 'work-event', { permaKey, payload });
+    console.info(`[karbon-work] webhook accepted for ${permaKey} — queued for processing`);
+    res.status(202).json({ ok: true, queued: true, resourcePermaKey: permaKey });
   }
 );

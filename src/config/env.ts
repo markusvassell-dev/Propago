@@ -48,8 +48,21 @@ export const env = {
   karbon: {
     webhookSecret: required('KARBON_WEBHOOK_SECRET'),
     apiBase: process.env.KARBON_API_BASE ?? 'https://api.karbonhq.com/v3',
-    bearerToken: process.env.KARBON_BEARER_TOKEN ?? '',
-    accessKey: process.env.KARBON_ACCESS_KEY ?? ''
+    // KARBON_AUTH_TOKEN is the name in Karbon's own docs; KARBON_BEARER_TOKEN is
+    // the historical name here — accept either so existing deploys keep working.
+    bearerToken: process.env.KARBON_AUTH_TOKEN ?? process.env.KARBON_BEARER_TOKEN ?? '',
+    accessKey: process.env.KARBON_ACCESS_KEY ?? '',
+    // Native Work-webhook signing key (Karbon signs the raw body HMAC-SHA256).
+    // Empty ⇒ signature verification is skipped (dev / before you set it up).
+    webhookSigningKey: process.env.KARBON_WEBHOOK_SIGNING_KEY ?? '',
+    // Work Item status that ARMS a Propago run, and the status set when Propago
+    // finishes. The handler only triggers on the activation status — never on
+    // the completion/error status — so the completion update can't loop.
+    triggerStatus: process.env.PROPAGO_TRIGGER_STATUS ?? 'Ready for Propago',
+    completeStatus: process.env.PROPAGO_COMPLETE_STATUS ?? 'Propago Complete',
+    // Optional: status set when every run in the batch failed (blank ⇒ leave the
+    // work item as-is and rely on the Timeline failure note).
+    errorStatus: process.env.PROPAGO_ERROR_STATUS ?? ''
   },
 
   // Web search / news for the research stage (SerpAPI). Optional: with no key
