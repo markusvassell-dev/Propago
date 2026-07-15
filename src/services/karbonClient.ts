@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosError, AxiosInstance } from 'axios';
 import { env } from '../config/env';
 
 // Karbon callback client (CLAUDE.md rule 2).
@@ -32,8 +32,15 @@ export async function getWorkItem(permaKey: string): Promise<Record<string, unkn
     console.info('[karbon:stub] would GET WorkItem', { permaKey });
     return null; // stub mode — caller falls back to webhook payload fields only
   }
-  const res = await client().get(`/WorkItems/${encodeURIComponent(permaKey)}`);
-  return res.data as Record<string, unknown>;
+  try {
+    const res = await client().get(`/WorkItems/${encodeURIComponent(permaKey)}`);
+    return res.data as Record<string, unknown>;
+  } catch (err) {
+    const ax = err as AxiosError;
+    const body = ax.response?.data ? JSON.stringify(ax.response.data).slice(0, 500) : ax.message;
+    console.error(`[karbon-work] GET /WorkItems/${permaKey} failed — HTTP ${ax.response?.status ?? 'network'}: ${body}`);
+    throw err;
+  }
 }
 
 /**

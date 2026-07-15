@@ -420,10 +420,20 @@ export function startWorkers(): Worker[] {
       QUEUE.karbonInbound,
       async (job) => {
         const { permaKey, payload } = job.data as { permaKey: string; payload?: unknown };
-        const out = await processWorkEvent({ permaKey, payload });
-        // Throwing here would make BullMQ retry; processWorkEvent only throws on
-        // genuine faults (fetch/DB), which is exactly when a retry is wanted.
-        return out.reason;
+        console.info(`[karbon-work] ${permaKey} — processing (attempt ${job.attemptsMade + 1})`);
+        try {
+          const out = await processWorkEvent({ permaKey, payload });
+          // Throwing here would make BullMQ retry; processWorkEvent only throws
+          // on genuine faults (fetch/DB), which is exactly when a retry is wanted.
+          return out.reason;
+        } catch (err) {
+          // This queue's jobs carry no runId, so the generic 'failed' handler
+          // can't log them — do it here so failures are never silent.
+          console.error(
+            `[karbon-work] ${permaKey} — processing FAILED (attempt ${job.attemptsMade + 1}/${env.workflow.maxJobAttempts}): ${(err as Error).message}`
+          );
+          throw err;
+        }
       },
       { blocking: false }
     )

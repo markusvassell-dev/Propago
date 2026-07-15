@@ -107,7 +107,20 @@ export async function processWorkEvent(input: { permaKey: string; payload?: unkn
   const payload = asRecord(input.payload);
 
   // 2. Fetch the full work item (stub mode returns null → use webhook fields).
-  const fetched = await getWorkItem(permaKey);
+  // A 4xx from Karbon won't get better on retry — fall back to the webhook
+  // payload (loudly) so a wrong key/permission shows up in the decision logs
+  // instead of dying silently. Network/5xx errors throw so BullMQ retries.
+  let fetched: Record<string, unknown> | null = null;
+  try {
+    fetched = await getWorkItem(permaKey);
+  } catch (err) {
+    const status = (err as { response?: { status?: number } }).response?.status;
+    if (status && status >= 400 && status < 500) {
+      console.warn(`[karbon-work] ${permaKey} — work-item fetch got HTTP ${status}; falling back to webhook payload fields`);
+    } else {
+      throw err; // transient — let the queue retry with backoff
+    }
+  }
   const wi = fetched ?? payload;
   const statuses = extractStatuses(wi);
   console.info(`[karbon-work] ${permaKey} — statuses primary="${statuses.primary}" secondary="${statuses.secondary}" work="${statuses.work}"`);
