@@ -218,7 +218,7 @@ export async function onRunSettledForKarbon(runId: string): Promise<void> {
 
   if (succeeded) {
     const ok = await setWorkItemStatus(workKey, env.karbon.completeStatus);
-    console.info(`[karbon-work] ${workKey} — batch complete (${completeCount}/${siblings.length}); status→"${env.karbon.completeStatus}" ${ok ? 'written' : '(stub)'}`);
+    console.info(`[karbon-work] ${workKey} — batch complete (${completeCount}/${siblings.length}); status→"${env.karbon.completeStatus}" ${ok ? 'written to Karbon' : 'NOT written (see error above; timeline note still posts)'}`);
     await postTimelineNote(
       workKey,
       'Propago complete',
@@ -227,7 +227,7 @@ export async function onRunSettledForKarbon(runId: string): Promise<void> {
   } else if (env.karbon.errorStatus) {
     // Do NOT silently mark complete on failure — set the configured error status.
     const ok = await setWorkItemStatus(workKey, env.karbon.errorStatus);
-    console.warn(`[karbon-work] ${workKey} — batch failed (${failedCount}/${siblings.length}); status→"${env.karbon.errorStatus}" ${ok ? 'written' : '(stub)'}`);
+    console.warn(`[karbon-work] ${workKey} — batch failed (${failedCount}/${siblings.length}); status→"${env.karbon.errorStatus}" ${ok ? 'written to Karbon' : 'NOT written (see error above)'}`);
   } else {
     console.warn(`[karbon-work] ${workKey} — batch failed (${failedCount}/${siblings.length}); no PROPAGO_ERROR_STATUS set, leaving work item status unchanged (Timeline failure note stands)`);
   }

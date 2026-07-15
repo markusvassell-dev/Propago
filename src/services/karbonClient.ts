@@ -44,26 +44,41 @@ export async function getWorkItem(permaKey: string): Promise<Record<string, unkn
 }
 
 /**
- * Set a Work Item's status back in Karbon (PUT /WorkItems/{key}). Best-effort:
- * Karbon exposes several status fields depending on account config, so we send
- * WorkStatus and (when the account uses them) the secondary status. Returns
- * true on a successful write, false in stub mode / on a swallowed error — the
- * caller always has the Timeline note as the durable record either way.
+ * Set a Work Item's status back in Karbon (PUT /WorkItems/{key}). Verified
+ * against live data: this account models custom workflow statuses as
+ * SecondaryStatus (e.g. WorkStatus reads "In Progress - Ready for Propago",
+ * SecondaryStatus is "Ready for Propago"), so the completion status is written
+ * there. Tries a partial PUT first; if Karbon requires the full DTO, falls
+ * back to fetch → merge → PUT. Returns false (never throws) on failure — the
+ * caller always has the Timeline note as the durable record.
  */
-export async function setWorkItemStatus(
-  permaKey: string,
-  status: string,
-  opts: { secondary?: boolean } = {}
-): Promise<boolean> {
+export async function setWorkItemStatus(permaKey: string, status: string): Promise<boolean> {
   if (!env.karbon.bearerToken) {
     console.info('[karbon:stub] would set WorkItem status', { permaKey, status });
     return false;
   }
-  const body: Record<string, unknown> = opts.secondary
-    ? { SecondaryStatus: status }
-    : { WorkStatus: status };
-  await client().put(`/WorkItems/${encodeURIComponent(permaKey)}`, body);
-  return true;
+  try {
+    await client().put(`/WorkItems/${encodeURIComponent(permaKey)}`, { SecondaryStatus: status });
+    return true;
+  } catch (err) {
+    const ax = err as AxiosError;
+    console.warn(
+      `[karbon-work] partial status PUT for ${permaKey} failed (HTTP ${ax.response?.status ?? 'network'}) — retrying with full work item`
+    );
+  }
+  try {
+    const wi = await getWorkItem(permaKey);
+    if (!wi) return false;
+    await client().put(`/WorkItems/${encodeURIComponent(permaKey)}`, { ...wi, SecondaryStatus: status });
+    return true;
+  } catch (err) {
+    const ax = err as AxiosError;
+    const body = ax.response?.data ? JSON.stringify(ax.response.data).slice(0, 500) : ax.message;
+    console.error(
+      `[karbon-work] PUT /WorkItems/${permaKey} status→"${status}" failed — HTTP ${ax.response?.status ?? 'network'}: ${body}`
+    );
+    return false;
+  }
 }
 
 /** Low-level: post one timeline note against a work item. */
