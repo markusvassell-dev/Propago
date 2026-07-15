@@ -79,21 +79,18 @@ export default function Connections() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', marginTop: 11 }}>
                 <span style={{ fontSize: 10.5, color: c.status === 'attention' ? 'var(--red)' : 'var(--tx3)' }}>{c.verified}</span>
-                <div style={{ marginLeft: 'auto', display: 'flex', gap: 7, alignItems: 'center' }}>
-                  {testMsg[c.id] && (
-                    <span
-                      className="mono"
-                      style={{ fontSize: 10, color: testMsg[c.id].startsWith('✕') ? 'var(--red)' : 'var(--grn)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                      title={testMsg[c.id]}
-                    >
-                      {testMsg[c.id]}
-                    </span>
-                  )}
-                  <button className="btn btn-ghost" style={{ padding: '5px 11px', fontSize: 11 }} onClick={() => test(c.id)}>
-                    Test
-                  </button>
-                </div>
+                <button className="btn btn-ghost" style={{ padding: '5px 11px', fontSize: 11, marginLeft: 'auto', flexShrink: 0 }} onClick={() => test(c.id)}>
+                  Test
+                </button>
               </div>
+              {testMsg[c.id] && (
+                <div
+                  className="mono"
+                  style={{ fontSize: 10, marginTop: 7, color: testMsg[c.id].startsWith('✕') ? 'var(--red)' : 'var(--grn)', wordBreak: 'break-all', lineHeight: 1.5 }}
+                >
+                  {testMsg[c.id]}
+                </div>
+              )}
             </div>
           );
         })}
