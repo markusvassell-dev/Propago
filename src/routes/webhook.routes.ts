@@ -91,7 +91,9 @@ webhookRouter.post(
 
     // Enqueue and return immediately. The worker owns fetch → decide → trigger.
     await enqueue(QUEUE.karbonInbound, 'work-event', { permaKey, payload });
-    console.info(`[karbon-work] webhook accepted for ${permaKey} — queued for processing`);
+    // Log the raw payload (bounded): Karbon's webhook shape varies by account
+    // and this is the ground truth for mapping its fields.
+    console.info(`[karbon-work] webhook accepted for ${permaKey} — queued for processing · payload: ${JSON.stringify(payload).slice(0, 600)}`);
     res.status(202).json({ ok: true, queued: true, resourcePermaKey: permaKey });
   }
 );
