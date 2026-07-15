@@ -185,6 +185,29 @@ budget):
 Each delivery logs `lead magnets requested (cap): N, created this delivery: M` — no
 credentials, keys, or client details in the log.
 
+## Going live per distribution channel
+
+Every adapter runs in **stub mode** until its env vars are set — the pipeline completes,
+logging the exact payload it *would* send. The **Connections** page computes each
+channel's status live from the environment ("Action needed" rows name the exact vars to
+set) and its **Test** button makes one authenticated call against the real provider, so
+that page is the go-live checklist. Channels you don't want yet can be disabled in
+Settings (`adapters_enabled`) — disabled channels are skipped cleanly, never stub-posted.
+
+| Channel | Env vars | Where to get them |
+| --- | --- | --- |
+| WordPress | `WORDPRESS_BASE_URL`, `WORDPRESS_USERNAME`, `WORDPRESS_APP_PASSWORD` | WP Admin → Users → Profile → **Application Passwords** (needs a user with `publish_posts`). Test verifies auth via `GET /wp-json/wp/v2/users/me`. |
+| Meta Ads | `META_ACCESS_TOKEN`, `META_AD_ACCOUNT_ID`, `META_PAGE_ID`, then `META_SANDBOX_MODE=false` | Meta developer app with `ads_management`. **Sandbox stays on (default) until your app passes Meta review** — sandbox logs payloads and returns synthetic IDs, zero spend. Flip `META_SANDBOX_MODE=false` only after review clears. |
+| ActiveCampaign | `AC_API_URL`, `AC_API_KEY`, `AC_LIST_ID` (default `1`) | AC → Settings → Developer. `AC_API_URL` is your `https://<account>.api-us1.com` base. Confirm `AC_LIST_ID` is the list that should receive lead-magnet contacts. |
+| LinkedIn | `LINKEDIN_ACCESS_TOKEN`, `LINKEDIN_ORG_URN` | OAuth token with `w_organization_social` for the company page; URN looks like `urn:li:organization:12345`. |
+| Facebook Page | `FB_PAGE_ACCESS_TOKEN`, `FB_PAGE_ID` | Page access token with `pages_manage_posts` (Graph API). |
+| Instagram | `IG_ACCESS_TOKEN`, `IG_USER_ID` | IG **Business** account linked to the FB page; token with `instagram_content_publish`. Note: IG posts require an image — the adapter reuses the article's OG image. |
+
+Social platforms are non-blocking by design: one platform failing (e.g. an expired IG
+token) is flagged on the run while the others still publish. After setting any var,
+redeploy, then hit **Test** on that channel's card — the result line shows the provider's
+real response (or the verbatim error, so the fix is obvious).
+
 ## GitHub → Railway deployment
 
 1. `git init && git add -A && git commit -m "Propago initial"` → push to a new GitHub repo (`.env` is gitignored; commit `.env.example` only).

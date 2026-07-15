@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
-import { useApp } from '../context/AppContext';
 
-// Connections page (DESIGN_SPEC §8.7): the 9 provider cards, Test ping,
-// Instagram reconnect flow.
+// Connections page (DESIGN_SPEC §8.7): the 9 provider cards with env-derived
+// status and a real authenticated Test call per provider.
 
 interface Conn {
   id: string;
@@ -26,7 +25,6 @@ const STATUS: Record<Conn['status'], { label: string; c: string; bg: string }> =
 };
 
 export default function Connections() {
-  const { showToast } = useApp();
   const [conns, setConns] = useState<Conn[]>([]);
   const [testMsg, setTestMsg] = useState<Record<string, string>>({});
 
@@ -40,16 +38,15 @@ export default function Connections() {
   }, [load]);
 
   const test = async (id: string) => {
-    setTestMsg((m) => ({ ...m, [id]: 'pinging…' }));
-    const r = await api.post<{ ok: boolean; ms: number }>(`/api/connections/${id}/test`).catch(() => ({ ok: false, ms: 0 }));
-    setTestMsg((m) => ({ ...m, [id]: r.ok ? `✓ 200 OK · ${r.ms}ms` : '✕ unreachable' }));
-    window.setTimeout(() => setTestMsg((m) => ({ ...m, [id]: '' })), 2700);
-  };
-
-  const reconnect = async (id: string) => {
-    await api.post(`/api/connections/${id}/reconnect`);
-    showToast('Instagram token refreshed — future runs post 3/3');
-    await load();
+    setTestMsg((m) => ({ ...m, [id]: 'testing…' }));
+    const r = await api
+      .post<{ ok: boolean; ms: number; detail?: string }>(`/api/connections/${id}/test`)
+      .catch(() => ({ ok: false, ms: 0, detail: 'unreachable' }));
+    setTestMsg((m) => ({
+      ...m,
+      [id]: r.ok ? `✓ ${r.detail ?? 'OK'} · ${r.ms}ms` : `✕ ${r.detail ?? 'unreachable'}`
+    }));
+    window.setTimeout(() => setTestMsg((m) => ({ ...m, [id]: '' })), 8000);
   };
 
   return (
@@ -83,11 +80,14 @@ export default function Connections() {
               <div style={{ display: 'flex', alignItems: 'center', marginTop: 11 }}>
                 <span style={{ fontSize: 10.5, color: c.status === 'attention' ? 'var(--red)' : 'var(--tx3)' }}>{c.verified}</span>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 7, alignItems: 'center' }}>
-                  {testMsg[c.id] && <span className="mono" style={{ fontSize: 10, color: 'var(--grn)' }}>{testMsg[c.id]}</span>}
-                  {c.id === 'ig' && c.status === 'attention' && (
-                    <button className="btn btn-redsolid" style={{ padding: '5px 11px', fontSize: 11 }} onClick={() => reconnect(c.id)}>
-                      Reconnect
-                    </button>
+                  {testMsg[c.id] && (
+                    <span
+                      className="mono"
+                      style={{ fontSize: 10, color: testMsg[c.id].startsWith('✕') ? 'var(--red)' : 'var(--grn)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={testMsg[c.id]}
+                    >
+                      {testMsg[c.id]}
+                    </span>
                   )}
                   <button className="btn btn-ghost" style={{ padding: '5px 11px', fontSize: 11 }} onClick={() => test(c.id)}>
                     Test
@@ -99,7 +99,9 @@ export default function Connections() {
         })}
       </div>
       <p style={{ fontSize: 11, color: 'var(--tx3)', lineHeight: 1.6, maxWidth: 760, marginTop: 16 }}>
-        All tokens are AES-256-GCM encrypted at rest with a master key from the environment — never stored in plaintext. Instagram's expired token demonstrates the non-blocking failure path: social publishing continues on LinkedIn + Facebook and flags IG for reconnection.
+        Status is computed live from the deployment's environment variables — “Action needed” rows name the exact vars to set,
+        and Test makes one authenticated call against the real provider. Social platforms are non-blocking: a failed platform is
+        flagged on the run while the others still publish. Channels can be disabled per-run type in Settings → adapters.
       </p>
     </div>
   );

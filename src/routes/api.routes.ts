@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import axios from 'axios';
+import { AxiosError } from 'axios';
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { query } from '../db/pool';
@@ -21,6 +21,7 @@ import {
 import { registryStats } from '../services/registryService';
 import { fireSimulatedTrigger } from '../services/triggerService';
 import { processWorkEvent } from '../services/karbonWork';
+import { channelHealth, liveTest } from '../services/connectionHealth';
 import { configureScheduler, schedulerNextRun, QUEUE, enqueue } from '../queues/queues';
 import { mapRun, RunApiRow, RUN_SELECT } from './mappers';
 
@@ -466,27 +467,38 @@ apiRouter.post(
 );
 
 // ---- Connections (spec §8.7 + §13.9) ----
+// Status/creds are computed from the LIVE env at read time (channelHealth),
+// never from the seeded demo labels — the page is the go-live checklist:
+// every unconfigured row names the exact env vars still needed.
 apiRouter.get(
   '/connections',
   wrap(async (_req, res) => {
     const { rows } = await query(
-      `SELECT id, glyph, glyph_bg, glyph_fg, name, category, phase, status, cred_mask, scopes, verified_label
+      `SELECT id, glyph, glyph_bg, glyph_fg, name, category, phase, scopes
          FROM connections ORDER BY sort ASC`
     );
     res.json({
-      connections: rows.map((c) => ({
-        id: c.id,
-        glyph: c.glyph,
-        gbg: c.glyph_bg,
-        gc: c.glyph_fg,
-        name: c.name,
-        cat: c.category,
-        phase: c.phase,
-        status: c.status,
-        cred: c.cred_mask,
-        scopes: c.scopes,
-        verified: c.verified_label
-      }))
+      connections: rows.map((c) => {
+        const h = channelHealth(c.id as string);
+        return {
+          id: c.id,
+          glyph: c.glyph,
+          gbg: c.glyph_bg,
+          gc: c.glyph_fg,
+          name: c.name,
+          cat: c.category,
+          phase: c.phase,
+          status: h.mode === 'live' ? 'ok' : h.mode === 'sandbox' ? 'sandbox' : 'attention',
+          cred: h.mask || 'not configured',
+          scopes: c.scopes,
+          verified:
+            h.mode === 'live'
+              ? 'Credentials present — run Test to verify'
+              : h.mode === 'sandbox'
+                ? `Sandbox — ${h.missing.join(', ')}`
+                : `Set ${h.missing.join(', ')}`
+        };
+      })
     });
   })
 );
@@ -496,21 +508,21 @@ apiRouter.post(
   wrap(async (req, res) => {
     const started = Date.now();
     const id = req.params.id;
-    // Cheap real health checks where creds exist; structural stubs elsewhere.
+    const h = channelHealth(id);
+    if (h.mode === 'unconfigured') {
+      // Never fabricate a fake success — say exactly what's missing.
+      res.json({ ok: false, ms: 0, mode: h.mode, detail: `Set ${h.missing.join(', ')}` });
+      return;
+    }
     try {
-      if (id === 'openai' && !env.openaiStub) {
-        await axios.get('https://api.openai.com/v1/models', {
-          headers: { Authorization: `Bearer ${env.openaiApiKey}` },
-          timeout: 8000
-        });
-      } else if (id === 'wp' && env.wordpress.baseUrl) {
-        await axios.get(`${env.wordpress.baseUrl}/wp-json`, { timeout: 8000 });
-      } else {
-        await new Promise((r) => setTimeout(r, 180 + Math.floor(Math.random() * 400)));
-      }
-      res.json({ ok: true, ms: Date.now() - started });
-    } catch {
-      res.json({ ok: false, ms: Date.now() - started });
+      const detail = await liveTest(id);
+      res.json({ ok: true, ms: Date.now() - started, mode: h.mode, detail });
+    } catch (e) {
+      const ax = e as AxiosError;
+      const body = ax.response
+        ? `HTTP ${ax.response.status} ${JSON.stringify(ax.response.data ?? '').slice(0, 300)}`
+        : (ax.message ?? 'unreachable');
+      res.json({ ok: false, ms: Date.now() - started, mode: h.mode, detail: body });
     }
   })
 );
