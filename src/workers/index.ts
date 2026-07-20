@@ -278,7 +278,13 @@ export function startWorkers(): Worker[] {
         const res = await activeCampaign.createAndSendCampaign({
           subject: p.subject ?? '',
           body: p.body ?? '',
-          campaignSlug: slug
+          campaignSlug: slug,
+          // Branded template slots (client newsletter design):
+          postTitle: d.blog_title,
+          postExcerpt: d.blog_meta_description,
+          liveUrl: d.live_url,
+          leadMagnetUrl: d.lead_magnet_url,
+          magnetName: d.magnet_name
         });
         const n = run.run_no - 1041;
         const recipients = res.recipientCount > 0 ? res.recipientCount.toLocaleString('en-US') : '1,842';

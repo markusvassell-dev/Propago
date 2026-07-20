@@ -1,11 +1,15 @@
 import axios from 'axios';
 import { env } from '../config/env';
 import { appendUtmToAllLinks } from '../utils/utm';
+import { renderBrandedEmail } from '../services/emailTemplate';
 import { EmailProvider, EmailSendResult } from './types';
 
 // ActiveCampaign adapter (EmailProvider). v3 API, api-token header.
 // The worker queue that drives this adapter is rate-limited to 5 req/s
 // (CLAUDE.md rule 3) — configured on the BullMQ Worker, not here.
+// Emails render through the client's branded newsletter template
+// (emailTemplate.ts) — generated copy in the intro, post + lead magnet as CTA
+// panels, Daryn's sign-off and the CASL footer preserved.
 
 export class ActiveCampaignAdapter implements EmailProvider {
   readonly name = 'activecampaign';
@@ -14,15 +18,25 @@ export class ActiveCampaignAdapter implements EmailProvider {
     subject: string;
     body: string;
     campaignSlug: string;
+    postTitle?: string;
+    postExcerpt?: string;
+    liveUrl?: string | null;
+    leadMagnetUrl?: string | null;
+    magnetName?: string | null;
   }): Promise<EmailSendResult> {
-    // UTM enforcement at publish time (rule 8): rewrite every link in the body.
+    // UTM enforcement at publish time (rule 8): rewrite every link in the body;
+    // the template UTM-tags its own CTA buttons.
     const bodyWithUtm = appendUtmToAllLinks(input.body, 'activecampaign', input.campaignSlug);
-    const html = bodyWithUtm
-      .split(/\n{2,}/)
-      .map((p) => `<p>${p.replace(/\n/g, '<br />')}</p>`)
-      .join('\n')
-      // AC uses %FIRSTNAME% personalisation tags.
-      .replace(/\{\{\s*first_name\s*\}\}/g, '%FIRSTNAME%');
+    const html = renderBrandedEmail({
+      subject: input.subject,
+      body: bodyWithUtm,
+      campaignSlug: input.campaignSlug,
+      postTitle: input.postTitle ?? '',
+      postExcerpt: input.postExcerpt ?? '',
+      liveUrl: input.liveUrl ?? null,
+      leadMagnetUrl: input.leadMagnetUrl ?? null,
+      magnetName: input.magnetName ?? null
+    });
 
     if (!env.activeCampaign.apiKey) {
       console.info('[activecampaign:stub] would send', {
@@ -42,8 +56,8 @@ export class ActiveCampaignAdapter implements EmailProvider {
     // 1) Create the message (email content).
     const message = await api.post('/api/3/messages', {
       message: {
-        fromemail: 'team@elementaccounting.ca',
-        fromname: 'Element Accounting',
+        fromemail: env.activeCampaign.fromEmail,
+        fromname: env.activeCampaign.fromName,
         subject: input.subject,
         html
       }

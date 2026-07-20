@@ -114,7 +114,9 @@ export const env = {
     apiUrl: process.env.AC_API_URL ?? '',
     apiKey: process.env.AC_API_KEY ?? '',
     listId: process.env.AC_LIST_ID ?? '1',
-    signupFormUrl: process.env.AC_SIGNUP_FORM_URL ?? ''
+    signupFormUrl: process.env.AC_SIGNUP_FORM_URL ?? '',
+    fromEmail: process.env.AC_FROM_EMAIL ?? 'team@elementaccounting.ca',
+    fromName: process.env.AC_FROM_NAME ?? 'Element Accounting'
   },
 
   social: {
