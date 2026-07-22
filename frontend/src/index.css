@@ -100,3 +100,5 @@ select.nf-input { appearance: auto; }
   white-space: nowrap;
 }
 .rowhover:hover { background: var(--bg3); }
+.rowdel:hover { color: var(--red) !important; }
+.rowdel:disabled { opacity: .5; cursor: default; }

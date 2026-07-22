@@ -65,6 +65,40 @@ apiRouter.get(
   })
 );
 
+// Delete a single run to clear clutter. Admin only, and only terminal runs
+// (failed/complete/rejected) — deleting an in-flight run would orphan its
+// BullMQ jobs. content_drafts + audit_trails cascade; lead_magnet links null.
+const DELETABLE = ['failed', 'complete', 'rejected'];
+apiRouter.delete(
+  '/runs/:id',
+  requireRole('admin'),
+  wrap(async (req, res) => {
+    const { rows } = await query<{ status: string }>(`SELECT status FROM workflow_runs WHERE id = $1`, [req.params.id]);
+    if (!rows[0]) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (!DELETABLE.includes(rows[0].status)) {
+      res.status(409).json({ error: 'run_active', message: 'Only failed, completed, or rejected runs can be deleted.' });
+      return;
+    }
+    await query(`DELETE FROM workflow_runs WHERE id = $1`, [req.params.id]);
+    console.info(`[runs] deleted ${req.params.id} (was ${rows[0].status}) by ${req.user!.handle}`);
+    res.json({ ok: true });
+  })
+);
+
+// Bulk-clear all failed runs in one click (admin only).
+apiRouter.delete(
+  '/runs',
+  requireRole('admin'),
+  wrap(async (req, res) => {
+    const { rowCount } = await query(`DELETE FROM workflow_runs WHERE status = 'failed'`);
+    console.info(`[runs] bulk-deleted ${rowCount ?? 0} failed run(s) by ${req.user!.handle}`);
+    res.json({ ok: true, deleted: rowCount ?? 0 });
+  })
+);
+
 // Audit trail (drives the job-log modal + run detail).
 apiRouter.get(
   '/runs/:id/audit',
