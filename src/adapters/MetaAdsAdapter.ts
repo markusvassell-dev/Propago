@@ -34,8 +34,8 @@ export class MetaAdsAdapter implements AdPlatform {
       name: `${input.campaignSlug}-adset`,
       optimization_goal: 'LEAD_GENERATION',
       billing_event: 'IMPRESSIONS',
-      daily_budget: 2000, // minor units — £20.00/day starting point
-      targeting: { geo_locations: { countries: ['GB'] } },
+      daily_budget: env.meta.adDailyBudgetMinor, // minor units of the ad account currency
+      targeting: { geo_locations: { countries: env.meta.adGeoCountries } },
       status: 'PAUSED'
     };
     const creativePayload = {

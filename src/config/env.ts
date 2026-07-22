@@ -107,7 +107,16 @@ export const env = {
     accessToken: process.env.META_ACCESS_TOKEN ?? '',
     adAccountId: process.env.META_AD_ACCOUNT_ID ?? '',
     pageId: process.env.META_PAGE_ID ?? '',
-    sandbox: bool('META_SANDBOX_MODE', true)
+    sandbox: bool('META_SANDBOX_MODE', true),
+    // Lead-campaign defaults (both configurable; campaigns still launch PAUSED).
+    // Budget is in the ad account's currency MINOR units (e.g. 2000 = $20.00 CAD).
+    adDailyBudgetMinor: int('META_AD_DAILY_BUDGET_MINOR', 2000),
+    // ISO country codes the ad set targets. Defaults to Canada (Element Accounting
+    // is Calgary-based); override with a comma list e.g. "CA,US".
+    adGeoCountries: (process.env.META_AD_GEO_COUNTRIES ?? 'CA')
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean)
   },
 
   activeCampaign: {
