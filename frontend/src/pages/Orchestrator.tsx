@@ -18,6 +18,16 @@ interface Preset {
 }
 interface RegEntry { title: string; lev: number | null; status: string; run: string; t: number; }
 interface Lead { name: string; email: string; synced: boolean; painField: string; source: string; t: number; }
+interface GenPP { painPoint: string; topic: string; keywords: string[]; sourceInsight: string; }
+interface IndustryGen {
+  industry: string;
+  region: string;
+  audience: string;
+  masterPrompt: string;
+  painPoints: GenPP[];
+  gptOnly: boolean;
+  stub: boolean;
+}
 
 const PROMPT_TEMPLATE = (niche: string, audience: string) =>
   'ROLE: You are a market researcher for a financial advisory firm serving businesses with under-served pain points.\n\n' +
@@ -53,6 +63,13 @@ export default function Orchestrator() {
   const [audSaved, setAudSaved] = useState(false);
   const [feed, setFeed] = useState<RegEntry[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
+  // ── Target Industry generator (admin): generate → review → save as preset ──
+  const [tiOpen, setTiOpen] = useState(false);
+  const [ti, setTi] = useState({ industry: '', region: '', audience: '', count: 5 });
+  const [tiBusy, setTiBusy] = useState(false);
+  const [tiMsg, setTiMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [tiGen, setTiGen] = useState<IndustryGen | null>(null);
+  const [tiKeep, setTiKeep] = useState<boolean[]>([]);
 
   const load = useCallback(async () => {
     const [s, reg, l] = await Promise.all([
@@ -140,6 +157,54 @@ export default function Orchestrator() {
     if (activeKey === key) await applyPreset('hs');
   };
 
+  // ── Target Industry: research an industry, review, then save as a preset ──
+  const tiGenerate = async () => {
+    if (!isAdmin) return setTiMsg({ text: 'Admins only', ok: false });
+    if (!ti.industry.trim()) return setTiMsg({ text: 'Enter a target industry first.', ok: false });
+    setTiBusy(true);
+    setTiMsg({ text: 'Researching — live web search + generation, ~15–30s…', ok: true });
+    try {
+      const g = await api.post<IndustryGen>('/api/target-industry/generate', ti);
+      setTiGen(g);
+      setTiKeep(g.painPoints.map(() => true));
+      setTiMsg({
+        text: `${g.painPoints.length} pain point(s) found${g.gptOnly ? ' (GPT-only — no SerpAPI key)' : ' · web-grounded'}${g.stub ? ' · SAMPLE (no OpenAI key)' : ''}. Review below, then save.`,
+        ok: true
+      });
+    } catch (e) {
+      setTiGen(null);
+      setTiMsg({ text: (e as Error).message || 'Generation failed', ok: false });
+    } finally {
+      setTiBusy(false);
+    }
+  };
+
+  const tiSave = async (activate: boolean) => {
+    if (!tiGen) return;
+    const keep = tiGen.painPoints.filter((_, i) => tiKeep[i]);
+    if (keep.length === 0) return setTiMsg({ text: 'Keep at least one pain point.', ok: false });
+    setTiBusy(true);
+    try {
+      await api.post('/api/target-industry/save', {
+        label: tiGen.industry,
+        industry: tiGen.industry,
+        region: tiGen.region,
+        audience: tiGen.audience,
+        masterPrompt: tiGen.masterPrompt,
+        painPoints: keep,
+        activate
+      });
+      await load();
+      setTiMsg({ text: `Saved “${tiGen.industry}” with ${keep.length} pain point(s)${activate ? ' — now active' : ''}.`, ok: true });
+      setTiGen(null);
+      showToast(`Target industry saved — ${keep.length} pain point(s) added to the library`);
+    } catch (e) {
+      setTiMsg({ text: (e as Error).message || 'Save failed', ok: false });
+    } finally {
+      setTiBusy(false);
+    }
+  };
+
   const toggleSched = async () => {
     const next = !schedOn;
     if (!(await put('scheduler_enabled', next))) return;
@@ -192,6 +257,89 @@ export default function Orchestrator() {
               {addOpen ? 'Close' : '+ New preset'}
             </button>
           </div>
+
+          {/* ── Target Industry: auto-research an industry into a preset ── */}
+          {isAdmin && (
+            <div style={{ marginTop: 12, border: '1px solid var(--line4)', borderRadius: 8, overflow: 'hidden' }}>
+              <button
+                onClick={() => setTiOpen((v) => !v)}
+                style={{ width: '100%', textAlign: 'left', background: 'var(--bg4)', border: 'none', cursor: 'pointer', padding: '11px 14px', display: 'flex', alignItems: 'center', gap: 8 }}
+              >
+                <span className="microlabel" style={{ color: 'var(--tx)' }}>🎯 Target industry — auto-research pain points</span>
+                <span style={{ marginLeft: 'auto', color: 'var(--tx3)', fontSize: 12 }}>{tiOpen ? '▾' : '▸'}</span>
+              </button>
+
+              {tiOpen && (
+                <div style={{ padding: '13px 15px' }}>
+                  <p style={{ fontSize: 11.5, color: 'var(--tx2)', margin: '0 0 10px', lineHeight: 1.6 }}>
+                    Enter an industry you want to win clients in. Propago searches live web/news sources, writes a master research prompt
+                    tailored to it, and proposes concrete pain points. Nothing is saved until you review and click save.
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 9 }}>
+                    <input className="nf-input" placeholder="Industry (e.g. Dental practices)" value={ti.industry} onChange={(e) => setTi({ ...ti, industry: e.target.value })} />
+                    <input className="nf-input" placeholder="Region (e.g. Calgary, AB)" value={ti.region} onChange={(e) => setTi({ ...ti, region: e.target.value })} />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 9, marginTop: 9 }}>
+                    <input className="nf-input" placeholder="Audience (e.g. Practice owners, 35–60)" value={ti.audience} onChange={(e) => setTi({ ...ti, audience: e.target.value })} />
+                    <select className="nf-input" value={ti.count} onChange={(e) => setTi({ ...ti, count: Number(e.target.value) })}>
+                      {[3, 5, 8].map((n) => <option key={n} value={n}>{n} points</option>)}
+                    </select>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
+                    <button className="btn btn-primary" style={{ padding: '7px 13px', fontSize: 11.5 }} disabled={tiBusy} onClick={tiGenerate}>
+                      {tiBusy ? 'Working…' : 'Generate'}
+                    </button>
+                    {tiMsg && <span style={{ fontSize: 11, color: tiMsg.ok ? 'var(--grn)' : 'var(--amb)', lineHeight: 1.5 }}>{tiMsg.text}</span>}
+                  </div>
+
+                  {tiGen && (
+                    <div style={{ marginTop: 13 }}>
+                      <MicroLabel>Generated master research prompt — editable</MicroLabel>
+                      <textarea
+                        className="nf-input"
+                        style={{ width: '100%', minHeight: 110, marginTop: 6, fontFamily: 'var(--mono, monospace)', fontSize: 11.5, lineHeight: 1.5 }}
+                        value={tiGen.masterPrompt}
+                        onChange={(e) => setTiGen({ ...tiGen, masterPrompt: e.target.value })}
+                      />
+
+                      <div style={{ marginTop: 12 }}>
+                        <MicroLabel>Pain points — uncheck any you don’t want</MicroLabel>
+                      </div>
+                      {tiGen.painPoints.map((p, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 9, alignItems: 'flex-start', background: 'var(--bg4)', borderRadius: 7, padding: '10px 12px', marginTop: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={tiKeep[i] ?? true}
+                            style={{ marginTop: 3 }}
+                            onChange={(e) => setTiKeep(tiKeep.map((v, j) => (j === i ? e.target.checked : v)))}
+                          />
+                          <div style={{ minWidth: 0, flex: 1, opacity: tiKeep[i] ? 1 : 0.45 }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.45 }}>{p.topic}</div>
+                            <div style={{ fontSize: 11.5, color: 'var(--tx2)', marginTop: 3, lineHeight: 1.5 }}>{p.painPoint}</div>
+                            <div className="mono" style={{ fontSize: 10, color: 'var(--tx3)', marginTop: 4 }}>
+                              {p.keywords.join(' · ')}{p.sourceInsight ? ` — ${p.sourceInsight}` : ''}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+
+                      <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                        <button className="btn btn-primary" style={{ padding: '7px 13px', fontSize: 11.5 }} disabled={tiBusy} onClick={() => tiSave(true)}>
+                          Save &amp; make active
+                        </button>
+                        <button className="btn btn-ghost" style={{ padding: '7px 13px', fontSize: 11.5 }} disabled={tiBusy} onClick={() => tiSave(false)}>
+                          Save to library
+                        </button>
+                        <button className="btn btn-ghost" style={{ padding: '7px 13px', fontSize: 11.5 }} onClick={() => { setTiGen(null); setTiMsg(null); }}>
+                          Discard
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {addOpen && (
             <div style={{ background: 'var(--bg4)', borderRadius: 8, padding: '13px 15px', marginTop: 11 }}>

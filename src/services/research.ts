@@ -2,7 +2,7 @@ import axios from 'axios';
 import { env } from '../config/env';
 import { query } from '../db/pool';
 import { checkAndRegisterPainPoint } from './registryService';
-import { composePrompt, getSetting, activePreset } from './presets';
+import { getSetting, activePreset, promptForPreset } from './presets';
 import { SerpApiAdapter, digestHits } from '../adapters/SerpApiAdapter';
 
 // Research stage (DESIGN_SPEC §2.1 rule 2, §13.1): web search + ChatGPT extract
@@ -34,9 +34,10 @@ async function extractViaOpenAI(
   avoid: string[],
   searchDigest: string
 ): Promise<{ pain_point: string; source_insight: string }> {
+  // Precedence: global master_prompt override → the active preset's own
+  // generated prompt (Target Industry) → the default composed template.
   const masterPrompt =
-    (await getSetting<string | null>('master_prompt', null)) ??
-    composePrompt((await activePreset()).niche, (await activePreset()).audience);
+    (await getSetting<string | null>('master_prompt', null)) ?? promptForPreset(await activePreset());
   const res = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {

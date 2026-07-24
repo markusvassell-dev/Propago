@@ -19,6 +19,14 @@ export interface Preset {
   audience: string;
   region: string;
   builtin?: boolean;
+  /** Tailored master research prompt (Target Industry generator). Falls back to
+   *  composePrompt() when absent. */
+  masterPrompt?: string;
+  /** Generated pain-point/topic pool for this industry (Target Industry
+   *  generator). Falls back to the built-in / derived pools when absent. */
+  topics?: PresetTopic[];
+  /** ISO timestamp of the last generation, for the Orchestrator UI. */
+  generatedAt?: string;
 }
 
 export const TOPICS_HS: PresetTopic[] = [
@@ -102,9 +110,17 @@ export function presetTopics(label: string, niche: string, audience: string, reg
 }
 
 export function topicsForPreset(p: Preset): PresetTopic[] {
+  // A generated pool (Target Industry) always wins — it's real researched
+  // material rather than the derived placeholders.
+  if (p.topics && p.topics.length) return p.topics;
   if (p.key === 'hs') return TOPICS_HS;
   if (p.key === 'yyc') return TOPICS_YYC;
   return presetTopics(p.label, p.niche, p.audience, p.region);
+}
+
+/** The research prompt for a preset: its generated master prompt, else the default template. */
+export function promptForPreset(p: Preset): string {
+  return (p.masterPrompt ?? '').trim() || composePrompt(p.niche, p.audience);
 }
 
 /** The master research prompt template (DESIGN_SPEC §8.3, verbatim). */

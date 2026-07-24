@@ -22,6 +22,8 @@ import { registryStats } from '../services/registryService';
 import { fireSimulatedTrigger } from '../services/triggerService';
 import { processWorkEvent } from '../services/karbonWork';
 import { channelHealth, liveTest } from '../services/connectionHealth';
+import { generateForIndustry, toPresetTopics } from '../services/industryGenerator';
+import { getSetting, Preset } from '../services/presets';
 import { configureScheduler, schedulerNextRun, QUEUE, enqueue } from '../queues/queues';
 import { mapRun, RunApiRow, RUN_SELECT } from './mappers';
 
@@ -602,6 +604,118 @@ const SETTING_KEYS = [
   'custom_audiences',
   'master_prompt'
 ];
+
+// ---- Target Industry (Orchestrator): generate → review → save as preset ----
+// Generate NEVER persists: it returns a tailored master research prompt plus
+// candidate pain points for the admin to review, edit and then save.
+apiRouter.post(
+  '/target-industry/generate',
+  requireRole('admin'),
+  wrap(async (req, res) => {
+    const b = (req.body ?? {}) as { industry?: string; region?: string; audience?: string; count?: number };
+    if (!(b.industry ?? '').trim()) {
+      res.status(422).json({ error: 'industry_required', message: 'Enter a target industry.' });
+      return;
+    }
+    try {
+      const gen = await generateForIndustry({
+        industry: b.industry ?? '',
+        region: b.region ?? '',
+        audience: b.audience ?? '',
+        count: b.count
+      });
+      await auditMsg(
+        null,
+        req.user!.handle,
+        `Target industry researched — “${gen.industry}”: ${gen.painPoints.length} pain point(s) ${gen.gptOnly ? '(GPT-only)' : '(web-grounded)'}`,
+        'industry.generated',
+        req.user!.id
+      );
+      res.json({ ok: true, ...gen });
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.error('[industry-gen] failed:', msg);
+      res.status(502).json({ error: 'generation_failed', message: msg.slice(0, 300) });
+    }
+  })
+);
+
+// Save the reviewed result as a switchable preset (its own prompt + pain-point
+// pool). Reusing an existing key updates that preset in place.
+apiRouter.post(
+  '/target-industry/save',
+  requireRole('admin'),
+  wrap(async (req, res) => {
+    const b = (req.body ?? {}) as {
+      key?: string;
+      label?: string;
+      industry?: string;
+      region?: string;
+      audience?: string;
+      masterPrompt?: string;
+      painPoints?: Array<{ painPoint?: string; topic?: string; keywords?: unknown; sourceInsight?: string }>;
+      activate?: boolean;
+    };
+    const industry = (b.industry ?? '').trim();
+    if (!industry) {
+      res.status(422).json({ error: 'industry_required' });
+      return;
+    }
+    const kept = (b.painPoints ?? []).filter((p) => (p.painPoint ?? '').trim());
+    if (kept.length === 0) {
+      res.status(422).json({ error: 'no_pain_points', message: 'Keep at least one pain point.' });
+      return;
+    }
+
+    const label = (b.label ?? '').trim() || industry;
+    const key =
+      (b.key ?? '').trim() ||
+      `ind-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24)}-${Date.now().toString().slice(-4)}`;
+
+    const preset = {
+      key,
+      label,
+      niche: `${industry}${b.region ? ` in ${b.region}` : ''}`,
+      audience: (b.audience ?? '').trim() || 'Owner-managers',
+      region: (b.region ?? '').trim(),
+      masterPrompt: (b.masterPrompt ?? '').trim(),
+      generatedAt: new Date().toISOString(),
+      topics: toPresetTopics({
+        industry,
+        painPoints: kept.map((p) => ({
+          painPoint: (p.painPoint ?? '').trim(),
+          topic: (p.topic ?? '').trim() || `Financial planning for ${industry}`,
+          keywords: Array.isArray(p.keywords) ? p.keywords.map(String).slice(0, 5) : [industry],
+          sourceInsight: (p.sourceInsight ?? '').trim()
+        }))
+      })
+    };
+
+    const presets = await getSetting<Preset[]>('presets', []);
+    const next = [...presets.filter((p) => p.key !== key), preset];
+    await query(
+      `INSERT INTO app_settings (key, value) VALUES ('presets', $1::jsonb)
+         ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_at = now()`,
+      [JSON.stringify(next)]
+    );
+    if (b.activate) {
+      await query(
+        `INSERT INTO app_settings (key, value) VALUES ('active_preset', $1::jsonb)
+           ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_at = now()`,
+        [JSON.stringify(key)]
+      );
+    }
+    await auditMsg(
+      null,
+      req.user!.handle,
+      `Target industry saved — preset “${label}” with ${kept.length} pain point(s)${b.activate ? ' · activated' : ''}`,
+      'industry.saved',
+      req.user!.id
+    );
+    console.info(`[industry-gen] saved preset ${key} (${kept.length} pain points)${b.activate ? ' + activated' : ''}`);
+    res.json({ ok: true, key, preset });
+  })
+);
 
 apiRouter.get(
   '/settings',

@@ -185,6 +185,29 @@ budget):
 Each delivery logs `lead magnets requested (cap): N, created this delivery: M` — no
 credentials, keys, or client details in the log.
 
+## Target Industry — auto-researched pain points (Orchestrator)
+
+Admins can turn a target industry into a ready-to-use research preset. In **Orchestrator →
+🎯 Target industry**, enter **industry + region + audience**, pick how many pain points, and
+click **Generate**. The app runs live web/news searches (SerpAPI), then asks the model for a
+**master research prompt tailored to that industry** plus that many **concrete, underserved
+pain points** (each with a blog topic, keywords and a source insight).
+
+Nothing is saved by generating — the results appear for review. Uncheck any pain point you
+don't want, edit the prompt inline, then **Save to library** (or **Save & make active**).
+Saving creates a switchable preset carrying its own `masterPrompt` and topic/pain-point pool:
+
+- `promptForPreset()` — the research step uses the preset's generated prompt (a global
+  `master_prompt` override still wins if set; otherwise it falls back to the default template).
+- `topicsForPreset()` — a generated pool wins over the built-in/derived pools, so runs draw
+  from real researched material.
+
+Endpoints (both `requireRole('admin')`): `POST /api/target-industry/generate` (returns for
+review, persists nothing) and `POST /api/target-industry/save` (creates/updates the preset,
+optionally activating it). Both are audit-logged. Generation is stub-safe: without a real
+`OPENAI_API_KEY` it returns clearly-labelled sample output, and without `SERPAPI_KEY` it
+degrades to GPT-only and says so in the result.
+
 ## Going live per distribution channel
 
 Every adapter runs in **stub mode** until its env vars are set — the pipeline completes,
