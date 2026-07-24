@@ -308,7 +308,18 @@ export async function saveOverrides(
 
 const pubKey = (runId: string) => `pub:${runId}`;
 
-export async function publishAll(runId: string, userId: string, actor: string): Promise<void> {
+export interface ChannelSelection {
+  ads?: boolean;
+  email?: boolean;
+  social?: boolean;
+}
+
+export async function publishAll(
+  runId: string,
+  userId: string,
+  actor: string,
+  selection?: ChannelSelection
+): Promise<void> {
   const ok = await transition(runId, 'dist_review', 'publishing', 'publish', {
     sql: ', published_by = $5',
     params: [userId]
@@ -336,22 +347,28 @@ export async function publishAll(runId: string, userId: string, actor: string): 
     'distribution.utm'
   );
 
-  const toggles = await getSetting<{ ads: boolean; email: boolean; social: boolean }>('adapters_enabled', {
+  // Channel enablement: the reviewer's per-run picks (this publish) win; where a
+  // channel isn't specified we fall back to the global Settings default. So a
+  // reviewer can turn a channel off for THIS run without touching global config.
+  const defaults = await getSetting<{ ads: boolean; email: boolean; social: boolean }>('adapters_enabled', {
     ads: true,
     email: true,
     social: true
   });
+  const pick = (k: keyof ChannelSelection): boolean =>
+    selection && typeof selection[k] === 'boolean' ? (selection[k] as boolean) : defaults[k];
+  const perRun = selection && (['ads', 'email', 'social'] as const).some((k) => typeof selection[k] === 'boolean');
   const run = await runRow(runId);
   const slug = campaignSlug(run.topic);
 
   const channels: Array<{ queue: (typeof QUEUE)[keyof typeof QUEUE]; job: string; stage: StageKey; label: string; enabled: boolean }> = [
-    { queue: QUEUE.metaAds, job: 'create-lead-campaign', stage: 'ads', label: 'Ads', enabled: toggles.ads },
-    { queue: QUEUE.activeCampaign, job: 'send-campaign', stage: 'email', label: 'Email', enabled: toggles.email },
-    { queue: QUEUE.social, job: 'post-all-platforms', stage: 'social', label: 'Social', enabled: toggles.social }
+    { queue: QUEUE.metaAds, job: 'create-lead-campaign', stage: 'ads', label: 'Ads', enabled: pick('ads') },
+    { queue: QUEUE.activeCampaign, job: 'send-campaign', stage: 'email', label: 'Email', enabled: pick('email') },
+    { queue: QUEUE.social, job: 'post-all-platforms', stage: 'social', label: 'Social', enabled: pick('social') }
   ];
   for (const c of channels.filter((ch) => !ch.enabled)) {
-    await patchStage(runId, c.stage, { status: 'skipped', note: 'Skipped — adapter disabled in Settings' });
-    await auditMsg(runId, 'system', `${c.label} skipped — adapter disabled`, 'publish.skipped');
+    await patchStage(runId, c.stage, { status: 'skipped', note: perRun ? 'Skipped — deselected at review' : 'Skipped — adapter disabled in Settings' });
+    await auditMsg(runId, 'system', `${c.label} skipped — ${perRun ? 'deselected by reviewer' : 'adapter disabled'}`, 'publish.skipped');
   }
   const active = channels.filter((ch) => ch.enabled);
   if (active.length === 0) {

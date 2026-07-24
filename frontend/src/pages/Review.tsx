@@ -34,6 +34,8 @@ export default function Review() {
   const [ads, setAds] = useState<AdsPayload>(emptyAds);
   const [email, setEmail] = useState<EmailPayload>(emptyEmail);
   const [social, setSocial] = useState<SocialPayload>(emptySocial);
+  // Per-run channel picks at the distribution gate (default all on).
+  const [chan, setChan] = useState<{ ads: boolean; email: boolean; social: boolean }>({ ads: true, email: true, social: true });
   const loadedFor = useRef<string | null>(null);
 
   const load = useCallback(async () => {
@@ -70,6 +72,7 @@ export default function Review() {
     setEmail(sel.dist?.email ?? emptyEmail);
     setSocial(sel.dist?.social ?? emptySocial);
     setTab(sel.status === 'distreview' ? 'ads' : 'blog');
+    setChan({ ads: true, email: true, social: true });
     setEditing(false);
     setRevising(false);
     setPdfOpen(false);
@@ -169,12 +172,15 @@ export default function Review() {
   const publishAll = async () => {
     if (!sel) return;
     if (!canApprove) return showToast('Editor role can’t publish — admin or reviewer required');
+    if (!chan.ads && !chan.email && !chan.social) return showToast('Select at least one channel to publish');
     try {
-      await api.patch(`/api/runs/${sel.id}/distribution/meta_ads`, ads);
-      await api.patch(`/api/runs/${sel.id}/distribution/ac_email`, email);
-      await api.patch(`/api/runs/${sel.id}/distribution/social`, social);
-      await api.post(`/api/runs/${sel.id}/publish-all`);
-      showToast(`${sel.wf} → publish jobs enqueued (meta-ads · activecampaign · social)`);
+      // Only save edits for channels being published.
+      if (chan.ads) await api.patch(`/api/runs/${sel.id}/distribution/meta_ads`, ads);
+      if (chan.email) await api.patch(`/api/runs/${sel.id}/distribution/ac_email`, email);
+      if (chan.social) await api.patch(`/api/runs/${sel.id}/distribution/social`, social);
+      await api.post(`/api/runs/${sel.id}/publish-all`, { channels: chan });
+      const on = (['ads', 'email', 'social'] as const).filter((k) => chan[k]).map((k) => names[k]).join(' · ');
+      showToast(`${sel.wf} → publishing ${on || 'nothing'}`);
       await Promise.all([load(), refreshRuns()]);
     } catch (err) {
       conflictToast(err, (wf, who) => `${wf} was already published by ${who} — nothing overwritten`);
@@ -596,11 +602,30 @@ export default function Review() {
 
               {/* Publish card */}
               <div className="card" style={{ padding: '14px 17px', marginTop: 14 }}>
-                <button className={`btn btn-primary ${editorDim}`} style={{ width: '100%' }} onClick={publishAll}>
-                  Approve &amp; Publish All
+                <div className="microlabel" style={{ marginBottom: 8 }}>Channels to publish</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 12 }}>
+                  {([['ads', 'Meta Ads'], ['email', 'Email (ActiveCampaign)'], ['social', 'Social (LinkedIn · Facebook · Instagram)']] as const).map(
+                    ([k, label]) => (
+                      <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={chan[k]} onChange={(e) => setChan((c) => ({ ...c, [k]: e.target.checked }))} />
+                        <span style={{ color: chan[k] ? 'var(--tx)' : 'var(--tx3)' }}>{label}</span>
+                      </label>
+                    )
+                  )}
+                </div>
+                <button
+                  className={`btn btn-primary ${editorDim}`}
+                  style={{ width: '100%', opacity: !chan.ads && !chan.email && !chan.social ? 0.5 : undefined }}
+                  onClick={publishAll}
+                >
+                  Approve &amp; Publish{' '}
+                  {chan.ads && chan.email && chan.social
+                    ? 'All'
+                    : (['ads', 'email', 'social'] as const).filter((k) => chan[k]).length + ' selected'}
                 </button>
                 <p style={{ fontSize: 10.5, color: 'var(--tx3)', lineHeight: 1.6, marginTop: 10, marginBottom: 0 }}>
-                  Nothing is enqueued to the adapters until this approval. Edits are saved as manual overrides and logged to the audit trail.
+                  Uncheck any channel to skip it for this run — deselected channels are marked “skipped” in the pipeline, not failed. Nothing is
+                  enqueued until this approval; edits are saved as manual overrides and logged.
                 </p>
               </div>
             </>

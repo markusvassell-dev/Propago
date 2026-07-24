@@ -98,7 +98,8 @@ export default function Connections() {
       <p style={{ fontSize: 11, color: 'var(--tx3)', lineHeight: 1.6, maxWidth: 760, marginTop: 16 }}>
         Status is computed live from the deployment's environment variables — “Action needed” rows name the exact vars to set,
         and Test makes one authenticated call against the real provider. Social platforms are non-blocking: a failed platform is
-        flagged on the run while the others still publish. Channels can be disabled per-run type in Settings → adapters.
+        flagged on the run while the others still publish. Set global defaults in Settings → adapters, or pick channels per run at
+        the distribution review gate.
       </p>
     </div>
   );

@@ -228,7 +228,16 @@ apiRouter.post(
   '/runs/:id/publish-all',
   requireRole('admin', 'reviewer'),
   wrap(async (req, res) => {
-    await publishAll(req.params.id, req.user!.id, req.user!.handle);
+    // Optional per-run channel picks: { channels: { ads?, email?, social? } }.
+    // Absent ⇒ fall back to the global adapters_enabled Settings default.
+    const raw = (req.body as { channels?: Record<string, unknown> } | undefined)?.channels;
+    const selection = raw
+      ? (['ads', 'email', 'social'] as const).reduce<Record<string, boolean>>((acc, k) => {
+          if (typeof raw[k] === 'boolean') acc[k] = raw[k] as boolean;
+          return acc;
+        }, {})
+      : undefined;
+    await publishAll(req.params.id, req.user!.id, req.user!.handle, selection);
     res.json({ ok: true });
   })
 );
