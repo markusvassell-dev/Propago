@@ -6,6 +6,7 @@ import { campaignSlug } from '../utils/utm';
 import { env } from '../config/env';
 import { mkStages, patchStage, startStage, endStage, resetStages, getStages, STAGES, StageKey } from './stages';
 import { getSetting } from '../services/presets';
+import { sendAlert } from '../services/alerts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Durable saga orchestrator. State lives in Postgres (workflow_runs.status +
@@ -421,6 +422,14 @@ export async function markTerminalFailure(
   );
   await setArtifacts(runId, { karbonNote: `${run.karbon_work_id} — “Workflow Failed” note on timeline` });
   await enqueue(QUEUE.karbonCallback, 'failure-note', { runId, kind: 'failure', step: stage });
+  // Tell a human. A parked run is otherwise completely silent.
+  await sendAlert({
+    kind: 'run_failed',
+    title: `Run failed at "${stage}"`,
+    detail: `${failure.message.slice(0, 200)}${failure.httpStatus ? ` (HTTP ${failure.httpStatus})` : ''} · ${failure.attempts} attempts exhausted`,
+    runLabel: `${wfId(run.run_no)} — ${run.topic}`,
+    runId
+  });
 }
 
 export async function onCallbackComplete(runId: string, kind: 'success' | 'failure'): Promise<void> {

@@ -13,6 +13,7 @@ import { ActiveCampaignAdapter } from '../adapters/ActiveCampaignAdapter';
 import { LinkedInPublisher, FacebookPublisher, InstagramPublisher } from '../adapters/SocialAdapters';
 import { postCompletionNote, postFailureNote } from '../services/karbonClient';
 import { processWorkEvent, onRunSettledForKarbon } from '../services/karbonWork';
+import { sendAlert } from '../services/alerts';
 import { runResearch } from '../services/research';
 import { checkAndRegisterAsset } from '../services/registryService';
 import { scoreSeo } from '../services/seoScorer';
@@ -647,6 +648,16 @@ async function jobGenerate(job: Job): Promise<void> {
   // Auto-approve clears gate 1 ONLY, after a short hold (spec §2.1 rule 5).
   if (auto && seo.total >= th) {
     await enqueue(QUEUE.generation, 'auto-approve', { runId }, { delay: 3000 });
+  } else {
+    // A run sitting at the gate is silent otherwise — content only ships if a
+    // human happens to look at the dashboard.
+    await sendAlert({
+      kind: 'needs_review',
+      title: 'Draft awaiting review (content gate)',
+      detail: `SEO ${seo.total}/100 vs threshold ${th}`,
+      runLabel: `${run.topic}`,
+      runId
+    });
   }
 }
 
@@ -707,4 +718,10 @@ async function jobDistGen(job: Job): Promise<void> {
     'Paused — distribution review gate (human approval required; auto-approve never applies here)',
     'distreview.paused'
   );
+  await sendAlert({
+    kind: 'needs_review',
+    title: 'Distribution awaiting approval (ad · email · social)',
+    detail: 'Nothing publishes until this is approved.',
+    runId
+  });
 }

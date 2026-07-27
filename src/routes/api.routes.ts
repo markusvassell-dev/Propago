@@ -549,6 +549,22 @@ apiRouter.get(
   })
 );
 
+// Which commit is actually running. Without this, "I pushed a fix" and "the
+// app has the fix" are indistinguishable — exactly the confusion that made a
+// deployed-vs-repo mismatch take several rounds to spot.
+apiRouter.get(
+  '/version',
+  wrap(async (_req, res) => {
+    res.json({
+      commit: env.build.commit ? env.build.commit.slice(0, 7) : '',
+      commitFull: env.build.commit,
+      branch: env.build.branch,
+      message: env.build.message.split('\n')[0].slice(0, 120),
+      startedAt: env.build.startedAt
+    });
+  })
+);
+
 // Config & credential health — the checks that would have caught an empty
 // DATABASE_URL, a "•"-corrupted KARBON_ACCESS_KEY and WORDPRESS_USERNAME=filler,
 // plus advance warning before a token silently expires.

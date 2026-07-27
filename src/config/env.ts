@@ -97,6 +97,32 @@ export const env = {
     /set-me|change-?me|placeholder|xxxx/i.test(process.env.OPENAI_API_KEY ?? '') ||
     (process.env.OPENAI_API_KEY ?? '').length < 24,
 
+  // Public URL of this deployment, used to build links inside alerts.
+  appBaseUrl: process.env.APP_BASE_URL ?? (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : ''),
+
+  // Outbound alerts. A parked run and a run waiting at the review gate are both
+  // silent by default; these push them somewhere a human actually looks.
+  // ALERT_WEBHOOK_URL accepts any Slack/Discord/Zapier-style JSON webhook.
+  alerts: {
+    webhookUrl: process.env.ALERT_WEBHOOK_URL ?? '',
+    on: (process.env.ALERT_ON ?? 'run_failed,needs_review')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+  },
+
+  // Build/deploy provenance. Railway injects these automatically; they let the
+  // dashboard show WHICH commit is actually running, so "I pushed a fix" and
+  // "the app has the fix" stop being assumptions.
+  build: {
+    commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.GIT_COMMIT_SHA ?? '',
+    branch: process.env.RAILWAY_GIT_BRANCH ?? '',
+    message: process.env.RAILWAY_GIT_COMMIT_MESSAGE ?? '',
+    deploymentId: process.env.RAILWAY_DEPLOYMENT_ID ?? '',
+    // Process start = when this build actually began serving.
+    startedAt: new Date().toISOString()
+  },
+
   // Content locale. The generator prompt was hardcoded to a UK firm / UK
   // English, which is wrong for a Calgary practice and hurts topical relevance
   // (UK tax terms, UK spellings). Both are configurable.

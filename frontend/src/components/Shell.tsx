@@ -1,8 +1,11 @@
-import { ReactNode } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import { api, ApiError } from '../lib/api';
+import { fmtAgo } from '../lib/format';
+
+interface BuildInfo { commit: string; branch: string; message: string; startedAt: string; }
 
 // App shell (DESIGN_SPEC §3): 218px fixed sidebar that NEVER themes, 58px
 // header with the exact title pairs, queue chip, theme toggle and the
@@ -44,6 +47,11 @@ export default function Shell({ children }: { children: ReactNode }) {
   const loc = useLocation();
   const view = viewKey(loc.pathname);
   const [title, subtitle] = TITLES[view] ?? TITLES.runs;
+  const [ver, setVer] = useState<BuildInfo | null>(null);
+
+  useEffect(() => {
+    api.get<BuildInfo>('/api/version').then(setVer).catch(() => setVer(null));
+  }, []);
 
   const reviewCount = runs.filter((r) => r.status === 'review' || r.status === 'distreview').length;
   const acctCount = runs.filter((r) => r.status === 'review').length;
@@ -149,13 +157,27 @@ export default function Shell({ children }: { children: ReactNode }) {
           })}
         </nav>
 
+        {/* Which build is actually serving. Without this, "the fix is pushed"
+            and "the app has the fix" are indistinguishable from the UI. */}
         <div style={{ border: '1px dashed rgba(255,255,255,.18)', borderRadius: 8, padding: '10px 11px', marginBottom: 10 }}>
           <div className="mono" style={{ fontSize: 9.5, textTransform: 'uppercase', letterSpacing: '.1em', color: '#D9A03F' }}>
-            ● sandbox mode
+            ● build
           </div>
-          <div style={{ fontSize: 10.5, color: '#8B8FA0', lineHeight: 1.55, marginTop: 5 }}>
-            Meta Ads + Karbon webhook run against sandbox until app review clears.
+          <div className="mono" style={{ fontSize: 10.5, color: '#8B8FA0', lineHeight: 1.55, marginTop: 5 }}>
+            {ver
+              ? `${ver.commit || 'unknown'}${ver.branch ? ` · ${ver.branch}` : ''}`
+              : 'checking…'}
           </div>
+          {ver?.message && (
+            <div style={{ fontSize: 10, color: '#6E7284', lineHeight: 1.5, marginTop: 3 }} title={ver.message}>
+              {ver.message.length > 52 ? `${ver.message.slice(0, 52)}…` : ver.message}
+            </div>
+          )}
+          {ver?.startedAt && (
+            <div style={{ fontSize: 10, color: '#6E7284', marginTop: 3 }}>
+              running {fmtAgo(new Date(ver.startedAt).getTime())}
+            </div>
+          )}
         </div>
 
         <div style={{ background: 'rgba(255,255,255,.04)', borderRadius: 7, padding: '9px 10px', display: 'flex', alignItems: 'center', gap: 9 }}>
