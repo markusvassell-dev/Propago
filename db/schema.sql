@@ -12,18 +12,30 @@ DO $$ BEGIN
   CREATE TYPE run_status AS ENUM (
     'triggered',        -- webhook accepted, generation queued
     'generating',       -- OpenAI generation in flight
+    'deploying',        -- WordPress DRAFT create in flight (pre-gate preview)
     'seo_review',       -- gate 1: human review of draft (+ SEO score)
     'revision',         -- looped back to generation with reviewer note
-    'deploying',        -- WordPress publish in flight
-    'dist_generating',  -- GPT-4o distribution payloads in flight
-    'dist_review',      -- gate 2: human review of ads/email/social payloads
-    'publishing',       -- fan-out to meta-ads / activecampaign / social queues
+    'publishing_live',  -- flipping the WordPress draft to status=publish
+    'social_generating',-- GPT-4o writing the 3 platform captions
+    'social_review',    -- gate 2: human review of LinkedIn/Facebook/Instagram captions
+    'social_publishing',-- fan-out to the three social platform jobs
+    'dist_generating',  -- GPT-4o ad creative + campaign email in flight
+    'dist_review',      -- gate 3: human review of ads + email
+    'publishing',       -- fan-out to meta-ads / activecampaign queues
     'completing',       -- Karbon timeline callback in flight
     'complete',
     'rejected',         -- terminal: human rejected the draft at gate 1 — run discarded, nothing published
+    'aborted',          -- terminal: human aborted at gate 2/3 — blog stays live, distribution cancelled
     'failed'            -- terminal: retries exhausted, "Workflow Failed" posted to Karbon
   );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- NOTE: the five statuses added by the 17-stage pipeline (publishing_live,
+-- social_generating, social_review, social_publishing, aborted) are listed
+-- above for fresh databases. Existing databases get them via the ALTER TYPE
+-- ... ADD VALUE loop in src/scripts/migrate.ts, which runs each one as its own
+-- statement — ADD VALUE inside the implicit transaction that a multi-statement
+-- query creates is only permitted on PG 12+, and this file must not depend on
+-- the server version.
 
 DO $$ BEGIN
   CREATE TYPE draft_status AS ENUM ('draft', 'approved', 'deployed', 'published', 'rejected');
@@ -94,6 +106,7 @@ CREATE TABLE IF NOT EXISTS content_drafts (
   blog_text             TEXT NOT NULL DEFAULT '',      -- full markdown from the generator (direct OpenAI)
   lead_magnet_url       TEXT,                          -- public PDF URL returned by the generator
   live_url              TEXT,                          -- WordPress URL after deploy
+  cms_post_id           TEXT,                          -- WP post ID — needed to flip the draft to published at gate ①
   meta_ads_payload      JSONB,  -- {headline, primaryText, link}
   ac_email_payload      JSONB,  -- {subject, body}
   social_payload        JSONB,  -- {linkedin, facebook, instagram}
@@ -181,7 +194,7 @@ ALTER TABLE workflow_runs
   ADD COLUMN IF NOT EXISTS levenshtein         NUMERIC(4,2),      -- research guard score vs nearest registry pain point
   ADD COLUMN IF NOT EXISTS seo_loops           INTEGER NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS applied_suggestions JSONB   NOT NULL DEFAULT '[]',
-  -- The 12-element stage array powering pipeline strips, stage lists and the
+  -- The 17-element stage array powering pipeline strips, stage lists and the
   -- job-log modal (spec §13.3): [{status,attempts,ms,note,err,startedAt,endedAt}]
   ADD COLUMN IF NOT EXISTS stage_state         JSONB   NOT NULL DEFAULT '[]',
   -- The 6 artifact fields of spec §6: blogUrl, magnetUrl, adId, campaignId, social, karbonNote
@@ -197,7 +210,37 @@ ALTER TABLE content_drafts
   ADD COLUMN IF NOT EXISTS meta_ads_original   JSONB,
   ADD COLUMN IF NOT EXISTS ac_email_original   JSONB,
   ADD COLUMN IF NOT EXISTS social_original     JSONB,
-  ADD COLUMN IF NOT EXISTS dist_edited         JSONB NOT NULL DEFAULT '{"ads":false,"email":false,"social":false}';
+  ADD COLUMN IF NOT EXISTS dist_edited         JSONB NOT NULL DEFAULT '{"ads":false,"email":false,"social":false}',
+  -- WordPress post ID. The post is created as a DRAFT before gate ①; approving
+  -- flips that same post to status=publish, so the ID has to survive the gate.
+  ADD COLUMN IF NOT EXISTS cms_post_id         TEXT;
+
+-- ---------- 12-stage → 17-stage stage_state remap (one-shot, idempotent) ----------
+-- The pipeline gained a WP-draft-before-review step, a go-live step, a split
+-- social generate/review pair and per-platform social stages. Rows written by
+-- the old 12-stage build are remapped BY KEY here; without this they'd fail the
+-- length check in getStages() and render as a blank pipeline. The WHERE clause
+-- makes it a no-op on every subsequent deploy.
+UPDATE workflow_runs SET stage_state = jsonb_build_array(
+  stage_state->0,                                                 -- trigger
+  stage_state->1,                                                 -- research
+  stage_state->2,                                                 -- draft
+  stage_state->3,                                                 -- seo
+  stage_state->5,                                                 -- deploy      (old idx 5)
+  stage_state->4,                                                 -- review      (old idx 4)
+  '{"status":"pending","attempts":1,"ms":0,"note":""}'::jsonb,     -- golive      (new)
+  '{"status":"pending","attempts":1,"ms":0,"note":""}'::jsonb,     -- socialgen   (new)
+  stage_state->7,                                                 -- socialreview← old single dist gate
+  stage_state->10,                                                -- linkedin    ← old combined social
+  stage_state->10,                                                -- facebook    ← old combined social
+  stage_state->10,                                                -- instagram   ← old combined social
+  stage_state->6,                                                 -- distgen
+  stage_state->7,                                                 -- distreview
+  stage_state->8,                                                 -- ads
+  stage_state->9,                                                 -- email
+  stage_state->11                                                 -- callback
+)
+WHERE jsonb_typeof(stage_state) = 'array' AND jsonb_array_length(stage_state) = 12;
 
 -- ---------- content_registry (spec §13.2 — uniqueness enforcement) ----------
 CREATE TABLE IF NOT EXISTS content_registry (

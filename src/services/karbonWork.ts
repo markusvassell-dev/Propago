@@ -177,7 +177,11 @@ export async function processWorkEvent(input: { permaKey: string; payload?: unkn
   }
 }
 
-const TERMINAL = ['complete', 'failed', 'rejected'];
+// A batch settles once every run in it has stopped moving. `aborted` MUST be
+// here: a human stopping the campaign at gate ②/③ is a terminal state, and
+// leaving it out would keep the batch permanently "in flight" — the work item
+// would sit in the trigger status forever and never get written back.
+export const TERMINAL = ['complete', 'failed', 'rejected', 'aborted'];
 
 /**
  * Called when a run reaches a terminal state. When every run in the batch
@@ -202,6 +206,10 @@ export async function onRunSettledForKarbon(runId: string): Promise<void> {
 
   const completeCount = siblings.filter((r) => r.status === 'complete').length;
   const failedCount = siblings.filter((r) => r.status === 'failed').length;
+  // Aborted runs published their blog post before the human stopped the rest.
+  // That is a deliberate outcome, not a failure, so it must not trip the error
+  // status — but it is not a full "complete" either, so it is reported apart.
+  const abortedCount = siblings.filter((r) => r.status === 'aborted').length;
 
   // Only act on a batch that came in through the native Work webhook.
   const { rows: evRows } = await query<{ id: string }>(
@@ -213,7 +221,7 @@ export async function onRunSettledForKarbon(runId: string): Promise<void> {
   if (evRows.length === 0) return;
   const eventId = evRows[0].id;
 
-  const succeeded = completeCount > 0;
+  const succeeded = completeCount + abortedCount > 0;
   const claim = await query(
     `UPDATE karbon_work_events
         SET completed_notified_at = now(), state = $2, updated_at = now()
@@ -224,12 +232,15 @@ export async function onRunSettledForKarbon(runId: string): Promise<void> {
   if ((claim.rowCount ?? 0) === 0) return; // already written back
 
   if (succeeded) {
+    const abortNote = abortedCount ? `, ${abortedCount} stopped early at a review gate` : '';
     const ok = await setWorkItemStatus(workKey, env.karbon.completeStatus);
-    console.info(`[karbon-work] ${workKey} — batch complete (${completeCount}/${siblings.length}); status→"${env.karbon.completeStatus}" ${ok ? 'written to Karbon' : 'NOT written (see error above; timeline note still posts)'}`);
+    console.info(`[karbon-work] ${workKey} — batch complete (${completeCount}/${siblings.length}${abortNote}); status→"${env.karbon.completeStatus}" ${ok ? 'written to Karbon' : 'NOT written (see error above; timeline note still posts)'}`);
     await postTimelineNote(
       workKey,
       'Propago complete',
-      `<p><strong>Propago finished</strong> — ${completeCount} of ${siblings.length} content set(s) published. Status set to “${env.karbon.completeStatus}”.</p>`
+      `<p><strong>Propago finished</strong> — ${completeCount} of ${siblings.length} content set(s) published in full${
+        abortedCount ? `; ${abortedCount} had the blog post published but remaining distribution cancelled by a reviewer` : ''
+      }. Status set to “${env.karbon.completeStatus}”.</p>`
     ).catch((e) => console.warn('[karbon-work] completion note failed (non-fatal):', str(e)));
   } else if (env.karbon.errorStatus) {
     // Do NOT silently mark complete on failure — set the configured error status.

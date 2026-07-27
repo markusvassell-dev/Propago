@@ -5,7 +5,7 @@ import { env } from '../config/env';
 import { query } from '../db/pool';
 import * as saga from '../saga/orchestrator';
 import { auditMsg, ACCT_STATUS } from '../saga/orchestrator';
-import { patchStage, startStage, endStage, getStages, stageIndex } from '../saga/stages';
+import { patchStage, startStage, endStage, getStages, stageIndex, StageKey, SocialStageKey, SOCIAL_STAGES } from '../saga/stages';
 import { OpenAIGenerationAdapter, GenerationError } from '../adapters/OpenAIGenerationAdapter';
 import { WordPressAdapter } from '../adapters/WordPressAdapter';
 import { MetaAdsAdapter } from '../adapters/MetaAdsAdapter';
@@ -17,7 +17,7 @@ import { sendAlert } from '../services/alerts';
 import { runResearch } from '../services/research';
 import { checkAndRegisterAsset } from '../services/registryService';
 import { scoreSeo } from '../services/seoScorer';
-import { generateDistributionPayloads } from '../services/distributionCopy';
+import { generateSocialCaptions, generateAdsAndEmail } from '../services/distributionCopy';
 import { stubCaptions } from '../services/stubContent';
 import { getSetting } from '../services/presets';
 import { fireSimulatedTrigger } from '../services/triggerService';
@@ -37,6 +37,22 @@ const wordpress = new WordPressAdapter();
 const metaAds = new MetaAdsAdapter();
 const activeCampaign = new ActiveCampaignAdapter();
 const socialPublishers = [new LinkedInPublisher(), new FacebookPublisher(), new InstagramPublisher()];
+
+const LABEL: Record<SocialStageKey, string> = { linkedin: 'LinkedIn', facebook: 'Facebook', instagram: 'Instagram' };
+
+/**
+ * Rolls the three per-platform stage outcomes into the single `social`
+ * artifact string the archive and the Karbon completion note both read.
+ */
+async function recordSocialSummary(runId: string): Promise<void> {
+  const stages = await getStages(runId);
+  const summary = SOCIAL_STAGES.map((k) => {
+    const st = stages[stageIndex(k)]?.status;
+    const mark = st === 'done' ? '✓' : st === 'skipped' ? '–' : st === 'failed' ? '✕' : '…';
+    return `${LABEL[k]} ${mark}`;
+  }).join(' · ');
+  await saga.setArtifacts(runId, { social: summary });
+}
 
 const secs = (ms: number): number => Math.max(1, Math.round(ms / 1000));
 const stripScheme = (url: string): string => url.replace(/^https?:\/\//, '');
@@ -68,9 +84,9 @@ function mkWorker(name: QueueName, processor: (job: Job) => Promise<unknown>, op
     const ge = err as GenerationError;
     try {
       if (name === QUEUE.wordpress) {
-        await handleDeployFailure(runId, job, err, exhausted);
+        await handleDeployFailure(runId, job, err, exhausted, stageForJob(name, job.name));
       } else if (opts.blocking) {
-        const stage = stageForJob(name, job.name);
+        const stage = stageForJob(name, job.name, job.data);
         if (!exhausted) {
           const backoff = 2 ** job.attemptsMade;
           await patchStage(runId, stage, {
@@ -115,21 +131,34 @@ function mkWorker(name: QueueName, processor: (job: Job) => Promise<unknown>, op
   return worker;
 }
 
-function stageForJob(
-  queue: QueueName,
-  jobName: string
-): 'research' | 'draft' | 'distgen' | 'ads' | 'email' | 'social' | 'deploy' {
+function stageForJob(queue: QueueName, jobName: string, data?: unknown): StageKey {
   if (queue === QUEUE.generation) {
-    return jobName === 'research' ? 'research' : jobName === 'distgen' ? 'distgen' : 'draft';
+    if (jobName === 'research') return 'research';
+    if (jobName === 'socialgen') return 'socialgen';
+    if (jobName === 'distgen') return 'distgen';
+    return 'draft';
   }
   if (queue === QUEUE.metaAds) return 'ads';
   if (queue === QUEUE.activeCampaign) return 'email';
-  if (queue === QUEUE.social) return 'social';
-  return 'deploy';
+  if (queue === QUEUE.social) {
+    // Each platform owns its own stage, so a failure names the platform that
+    // actually broke instead of a single ambiguous "social" row.
+    const p = (data as { platform?: string } | undefined)?.platform;
+    return p === 'facebook' ? 'facebook' : p === 'instagram' ? 'instagram' : 'linkedin';
+  }
+  return jobName === 'golive' ? 'golive' : 'deploy';
 }
 
 // ---- Deploy failure: the spec's verbatim retry/park narrative (§2.1 rule 6, §9.1) ----
-async function handleDeployFailure(runId: string, job: Job, err: Error, exhausted: boolean): Promise<void> {
+// Shared by both WordPress stages: `deploy` (create the draft) and `golive`
+// (flip it to published) — same endpoint family, same retry/park narrative.
+async function handleDeployFailure(
+  runId: string,
+  job: Job,
+  err: Error,
+  exhausted: boolean,
+  stage: StageKey = 'deploy'
+): Promise<void> {
   const ax = err as Error & { response?: { status: number; statusText: string; data: unknown } };
   const status = ax.response ? `${ax.response.status} ${ax.response.statusText || ''}`.trim() : err.message.slice(0, 80);
   const attempt = job.attemptsMade;
@@ -146,7 +175,7 @@ async function handleDeployFailure(runId: string, job: Job, err: Error, exhauste
       attempt === 1
         ? `POST /wp-json/wp/v2/posts → ${status} · retry 1/3 in ${backoff}s (exponential backoff)`
         : `Retry ${attempt}/3 → ${status} · backing off ${backoff}s`;
-    await patchStage(runId, 'deploy', { status: 'retry', attempts: attempt + 1, note });
+    await patchStage(runId, stage, { status: 'retry', attempts: attempt + 1, note });
     await auditMsg(runId, 'api', note, 'job.retry');
     return;
   }
@@ -157,14 +186,14 @@ async function handleDeployFailure(runId: string, job: Job, err: Error, exhauste
   const errBody = `POST ${wpUrl} → HTTP ${status}\n${body}\n${attemptTrail} — retries exhausted · parked · "Workflow Failed" → Karbon timeline`;
   await endStage(
     runId,
-    'deploy',
+    stage,
     'failed',
     `POST /wp-json/wp/v2/posts → ${status} ×${attempt} · backoff exhausted (2s → 4s → 8s) · parked · “Workflow Failed” posted to Karbon timeline`,
     errBody
   );
   await auditMsg(runId, 'api', `Retry ${attempt}/3 → ${status} · attempts exhausted — run parked as failed`, 'job.failed');
-  await saga.markTerminalFailure(runId, 'deploy', {
-    message: `WordPress deploy failed: ${status}`,
+  await saga.markTerminalFailure(runId, stage, {
+    message: `WordPress ${stage === 'golive' ? 'go-live' : 'deploy'} failed: ${status}`,
     httpStatus: ax.response?.status,
     responseBody: errBody,
     attempts: attempt
@@ -181,6 +210,7 @@ export function startWorkers(): Worker[] {
       async (job) => {
         if (job.name === 'research') return jobResearch(job);
         if (job.name === 'generate') return jobGenerate(job);
+        if (job.name === 'socialgen') return jobSocialGen(job);
         if (job.name === 'distgen') return jobDistGen(job);
         if (job.name === 'auto-approve') return jobAutoApprove(job);
         console.warn('[content-pipeline] unknown job', job.name);
@@ -189,42 +219,14 @@ export function startWorkers(): Worker[] {
     )
   );
 
-  // ---- wordpress-publisher (deploy) ----
+  // ---- wordpress-publisher: draft → (gate ①) → go live ----
   workers.push(
     mkWorker(
       QUEUE.wordpress,
       async (job) => {
-        const { runId } = job.data as { runId: string };
-        const run = await saga.runRow(runId);
-        const d = await saga.draft(runId);
-        if (job.attemptsMade > 0) await patchStage(runId, 'deploy', { status: 'retry', attempts: job.attemptsMade + 1 });
-
-        const res = await wordpress.publishPost({
-          title: d.blog_title,
-          markdown: d.blog_text,
-          metaDescription: d.blog_meta_description,
-          leadMagnetUrl: d.lead_magnet_url ?? '',
-          topicSlugSource: run.topic
-        });
-
-        const blogUrl = stripScheme(res.liveUrl);
-        const magnetUrl = `elementaccounting.ca/downloads/${slug3Of(run.topic)}-checklist.pdf`;
-        await query(
-          `UPDATE content_drafts SET live_url = $1, status = 'deployed', updated_at = now() WHERE workflow_run_id = $2`,
-          [res.liveUrl, runId]
-        );
-        await saga.setArtifacts(runId, { blogUrl, magnetUrl });
-        const attempts = job.attemptsMade + 1;
-        await endStage(runId, 'deploy', 'done', 'POST /wp-json/wp/v2/posts → 201 Created · live URL stored');
-        await auditMsg(
-          runId,
-          'api',
-          `POST /wp-json/wp/v2/posts → 201 Created · live URL stored${attempts > 1 ? ` (attempt ${attempts})` : ''}`,
-          'deploy.completed'
-        );
-        await saga.transition(runId, 'deploying', 'dist_generating', 'dist_generation');
-        await startStage(runId, 'distgen');
-        await enqueue(QUEUE.generation, 'distgen', { runId });
+        if (job.name === 'golive') return jobGoLive(job);
+        if (job.name === 'trash-draft') return jobTrashDraft(job);
+        return jobDeployDraft(job);
       },
       { blocking: true }
     )
@@ -302,66 +304,45 @@ export function startWorkers(): Worker[] {
     )
   );
 
-  // ---- social-publish (NON-BLOCKING failures; never throws) ----
+  // ---- social-publish: ONE job per platform (NON-BLOCKING; never throws) ----
+  // Split per platform so LinkedIn/Facebook/Instagram each own a stage: a
+  // failure names the platform that broke and can be retried on its own,
+  // instead of one combined "partial" row that hides which one it was.
   workers.push(
     mkWorker(
       QUEUE.social,
       async (job) => {
-        const { runId, slug } = job.data as { runId: string; slug: string };
+        const { runId, slug, platform } = job.data as { runId: string; slug: string; platform: SocialStageKey };
+        const pub = socialPublishers.find((x) => x.platform === platform);
+        const stage = platform as StageKey;
+        if (!pub) {
+          await endStage(runId, stage, 'skipped', `No publisher registered for ${platform}`);
+          await saga.onChannelComplete(runId, 'social');
+          return;
+        }
         const d = await saga.draft(runId);
-        const p = d.social_payload ?? {};
-        const captions: Record<string, string> = {
-          linkedin: p.linkedin ?? '',
-          facebook: p.facebook ?? '',
-          instagram: p.instagram ?? ''
-        };
+        const caption = ((d.social_payload ?? {}) as Record<string, string>)[platform] ?? '';
+        const isIg = platform === 'instagram';
 
-        // Stub-mode connection state: an expired Instagram token (Connections
-        // page, status 'attention') fails IG non-blocking, exactly like the
-        // prototype. Real tokens use the live adapters.
-        const { rows: connRows } = await query<{ id: string; status: string }>(
-          `SELECT id, status FROM connections WHERE id IN ('li','fb','ig')`
-        );
-        const connStatus = Object.fromEntries(connRows.map((r) => [r.id, r.status]));
+        const res = await pub.publish({
+          caption,
+          linkUrl: isIg ? null : d.live_url, // IG: no links, "link in bio"
+          campaignSlug: slug
+        });
 
-        const results: SocialPostResult[] = await Promise.all(
-          socialPublishers.map(async (pub): Promise<SocialPostResult> => {
-            const isIg = pub.platform === 'instagram';
-            const hasRealToken =
-              (pub.platform === 'linkedin' && env.social.linkedinToken) ||
-              (pub.platform === 'facebook' && env.social.fbPageToken) ||
-              (isIg && env.social.igToken);
-            if (!hasRealToken && isIg && connStatus['ig'] === 'attention') {
-              return {
-                platform: 'instagram',
-                ok: false,
-                error:
-                  'POST graph.facebook.com/v19.0/17845/media_publish → HTTP 400\n{"error":{"type":"OAuthException","code":190,"message":"Error validating access token: session has expired"}}\nnon-blocking — LinkedIn ✓ Facebook ✓ · reconnect Instagram in Connections'
-              };
-            }
-            return pub.publish({
-              caption: captions[pub.platform],
-              linkUrl: isIg ? null : d.live_url, // IG: no links, "link in bio"
-              campaignSlug: slug
-            });
-          })
-        );
-
-        const by = Object.fromEntries(results.map((r) => [r.platform, r]));
-        const igOk = by['instagram']?.ok !== false;
-        const liOk = by['linkedin']?.ok !== false;
-        const fbOk = by['facebook']?.ok !== false;
-        const summary = `LinkedIn ${liOk ? '✓' : '✕'} · Facebook ${fbOk ? '✓' : '✕'} · Instagram ${igOk ? '✓' : '✕'}`;
-        const allOk = igOk && liOk && fbOk;
-        await saga.setArtifacts(runId, { social: summary });
-        const note = allOk
-          ? `${summary} — all pages posted`
-          : igOk
-            ? `${summary} — non-blocking, flagged in Connections`
-            : `LinkedIn ✓ · Facebook ✓ · Instagram ✕ (token expired) — non-blocking, flagged in Connections`;
-        await endStage(runId, 'social', allOk ? 'done' : 'partial', note, allOk ? undefined : by['instagram']?.error ?? by['linkedin']?.error ?? by['facebook']?.error);
-        await auditMsg(runId, 'api', note, 'publish.social.completed');
-        await saga.onChannelComplete(runId);
+        if (res.ok) {
+          const note = `${LABEL[platform]} posted`;
+          await endStage(runId, stage, 'done', note);
+          await auditMsg(runId, 'api', note, `publish.${platform}.completed`);
+        } else {
+          // Non-blocking by design: one dead platform must not stop the others
+          // or park the run.
+          const note = `${LABEL[platform]} failed — non-blocking, flagged in Connections`;
+          await endStage(runId, stage, 'failed', note, res.error);
+          await auditMsg(runId, 'api', `${note}: ${(res.error ?? '').slice(0, 200)}`, `publish.${platform}.failed`);
+        }
+        await recordSocialSummary(runId);
+        await saga.onChannelComplete(runId, 'social');
       },
       { blocking: false }
     )
@@ -391,8 +372,13 @@ export function startWorkers(): Worker[] {
           await auditMsg(runId, 'api', note, 'karbon.timeline_note_posted');
           await saga.onCallbackComplete(runId, 'success');
           const stages = await getStages(runId);
-          const partial = stages[stageIndex('social')]?.status === 'partial';
-          await auditMsg(runId, 'system', `Workflow complete — all jobs succeeded${partial ? ' (1 partial)' : ''}`, 'run.complete');
+          const degraded = SOCIAL_STAGES.filter((k) => stages[stageIndex(k)]?.status === 'failed').length;
+          await auditMsg(
+            runId,
+            'system',
+            `Workflow complete — all jobs succeeded${degraded ? ` (${degraded} social platform${degraded > 1 ? 's' : ''} failed, non-blocking)` : ''}`,
+            'run.complete'
+          );
           // Native Work-webhook batches: write the completion status back to
           // Karbon once the whole batch has settled (no-op for other triggers).
           await onRunSettledForKarbon(runId).catch((e) => console.warn('[karbon-work] settle(success) failed (non-fatal):', e));
@@ -674,40 +660,152 @@ async function jobAutoApprove(job: Job): Promise<void> {
   }
 }
 
-async function jobDistGen(job: Job): Promise<void> {
+// ---- WordPress: create the draft (pre-gate ①) ----
+async function jobDeployDraft(job: Job): Promise<void> {
   const { runId } = job.data as { runId: string };
   const run = await saga.runRow(runId);
   const d = await saga.draft(runId);
-  const brandVoice = await getSetting<string>('brand_voice', '');
-  const liveUrl = d.live_url ?? `https://elementaccounting.ca/blog/${slugOf(run.topic)}`;
-  const art = (run.artifacts ?? {}) as Record<string, string | null>;
-  const magnetDisplayUrl = `https://${art.magnetUrl || `elementaccounting.ca/downloads/${slug3Of(run.topic)}-checklist.pdf`}`;
+  if (job.attemptsMade > 0) await patchStage(runId, 'deploy', { status: 'retry', attempts: job.attemptsMade + 1 });
 
-  const payloads = await generateDistributionPayloads({
-    topic: run.topic,
-    blogTitle: d.blog_title,
+  const res = await wordpress.publishPost({
+    title: d.blog_title,
+    markdown: d.blog_text,
     metaDescription: d.blog_meta_description,
-    liveUrl,
-    leadMagnetUrl: magnetDisplayUrl,
-    leadMagnetName: d.magnet_name ?? 'Financial Health Checklist',
-    keywords: run.keywords,
-    brandVoice
+    leadMagnetUrl: d.lead_magnet_url ?? '',
+    topicSlugSource: run.topic,
+    // A revision loop re-runs this stage; update the SAME post rather than
+    // leaving an orphan draft behind on every pass.
+    existingPostId: d.cms_post_id ?? undefined
   });
 
   await query(
-    `UPDATE content_drafts SET
-        meta_ads_payload = $1, ac_email_payload = $2, social_payload = $3,
-        meta_ads_original = $1, ac_email_original = $2, social_original = $3,
-        dist_edited = '{"ads":false,"email":false,"social":false}'::jsonb,
-        updated_at = now()
-      WHERE workflow_run_id = $4`,
-    [JSON.stringify(payloads.metaAds), JSON.stringify(payloads.acEmail), JSON.stringify(payloads.social), runId]
+    `UPDATE content_drafts SET live_url = $1, cms_post_id = $2, status = 'draft', updated_at = now()
+      WHERE workflow_run_id = $3`,
+    [res.liveUrl, res.cmsPostId, runId]
   );
-  await endStage(runId, 'distgen', 'done', 'Ad creative, campaign email + 3 platform captions generated from the approved post');
+  const attempts = job.attemptsMade + 1;
+  const note = `POST /wp-json/wp/v2/posts (status=draft) → 201 Created · preview ready for review ①`;
+  await endStage(runId, 'deploy', 'done', note);
+  await auditMsg(runId, 'api', `${note}${attempts > 1 ? ` (attempt ${attempts})` : ''}`, 'deploy.draft_created');
+
+  // Straight into gate ① — the reviewer now has a real WordPress preview.
+  await saga.transition(runId, 'deploying', 'seo_review', 'review');
+  await startStage(runId, 'review', 'gate');
+  await auditMsg(runId, 'system', 'Paused — content review gate ① (WordPress draft awaiting approval)', 'review.paused');
+  await sendAlert({
+    kind: 'needs_review',
+    title: 'Blog draft awaiting approval',
+    detail: 'The post is staged in WordPress as a draft and is not public until approved.',
+    runId
+  });
+  const auto = await autoApprove();
+  if (auto) await enqueue(QUEUE.generation, 'auto-approve', { runId });
+}
+
+// ---- WordPress: flip the approved draft to published (gate ① approval) ----
+async function jobGoLive(job: Job): Promise<void> {
+  const { runId } = job.data as { runId: string };
+  const run = await saga.runRow(runId);
+  const d = await saga.draft(runId);
+  if (job.attemptsMade > 0) await patchStage(runId, 'golive', { status: 'retry', attempts: job.attemptsMade + 1 });
+  if (!d.cms_post_id) throw new Error('No WordPress post ID on the draft — cannot publish');
+
+  const { liveUrl } = await wordpress.publishLive(d.cms_post_id);
+  const blogUrl = stripScheme(liveUrl);
+  const magnetUrl = `elementaccounting.ca/downloads/${slug3Of(run.topic)}-checklist.pdf`;
+  await query(
+    `UPDATE content_drafts SET live_url = $1, status = 'deployed', updated_at = now() WHERE workflow_run_id = $2`,
+    [liveUrl, runId]
+  );
+  await saga.setArtifacts(runId, { blogUrl, magnetUrl });
+  const note = `POST /wp-json/wp/v2/posts/${d.cms_post_id} (status=publish) → 200 OK · post is live`;
+  await endStage(runId, 'golive', 'done', note);
+  await auditMsg(runId, 'api', note, 'golive.completed');
+
+  await saga.transition(runId, 'publishing_live', 'social_generating', 'social_generation');
+  await startStage(runId, 'socialgen');
+  await enqueue(QUEUE.generation, 'socialgen', { runId });
+}
+
+// ---- WordPress: bin the draft when gate ① rejects the run ----
+async function jobTrashDraft(job: Job): Promise<void> {
+  const { runId } = job.data as { runId: string };
+  const d = await saga.draft(runId).catch(() => null);
+  if (!d?.cms_post_id || !env.wordpress.baseUrl) return;
+  try {
+    await wordpress.trashPost(d.cms_post_id);
+    await auditMsg(runId, 'api', `WordPress draft ${d.cms_post_id} moved to trash — run was rejected`, 'deploy.draft_trashed');
+  } catch (e) {
+    // Best-effort cleanup: a leftover draft is untidy, not a pipeline failure,
+    // and the run is already terminal.
+    console.warn('[wordpress] trash draft failed (non-fatal):', (e as Error).message);
+  }
+}
+
+// ---- Social captions (post-go-live, pre-gate ②) ----
+async function jobSocialGen(job: Job): Promise<void> {
+  const { runId } = job.data as { runId: string; note?: string };
+  const input = await distInput(runId);
+  const social = await generateSocialCaptions(input);
+
+  await query(
+    `UPDATE content_drafts SET social_payload = $1, social_original = $1,
+        dist_edited = jsonb_set(COALESCE(dist_edited, '{}'::jsonb), '{social}', 'false'::jsonb),
+        updated_at = now()
+      WHERE workflow_run_id = $2`,
+    [JSON.stringify(social), runId]
+  );
+  await endStage(runId, 'socialgen', 'done', 'LinkedIn, Facebook and Instagram captions generated from the live post');
+  await auditMsg(runId, 'api', 'GPT-4o (brand voice in system prompt): 3 platform captions generated', 'socialgen.completed');
+  await saga.transition(runId, 'social_generating', 'social_review', 'social_review');
+  await startStage(runId, 'socialreview', 'gate');
+  await auditMsg(runId, 'system', 'Paused — social review gate ② (human approval required)', 'socialreview.paused');
+  await sendAlert({
+    kind: 'needs_review',
+    title: 'Social captions awaiting approval (LinkedIn · Facebook · Instagram)',
+    detail: 'Nothing posts to social until this is approved.',
+    runId
+  });
+}
+
+/** Shared prompt context for both distribution generation stages. */
+async function distInput(runId: string) {
+  const run = await saga.runRow(runId);
+  const d = await saga.draft(runId);
+  const brandVoice = await getSetting<string>('brand_voice', '');
+  const art = (run.artifacts ?? {}) as Record<string, string | null>;
+  return {
+    topic: run.topic,
+    blogTitle: d.blog_title,
+    metaDescription: d.blog_meta_description,
+    liveUrl: d.live_url ?? `https://elementaccounting.ca/blog/${slugOf(run.topic)}`,
+    leadMagnetUrl: `https://${art.magnetUrl || `elementaccounting.ca/downloads/${slug3Of(run.topic)}-checklist.pdf`}`,
+    leadMagnetName: d.magnet_name ?? 'Financial Health Checklist',
+    keywords: run.keywords,
+    brandVoice
+  };
+}
+
+// ---- Ad creative + campaign email (post-social, pre-gate ③) ----
+async function jobDistGen(job: Job): Promise<void> {
+  const { runId } = job.data as { runId: string; note?: string };
+  const input = await distInput(runId);
+  const { metaAds, acEmail } = await generateAdsAndEmail(input);
+
+  await query(
+    `UPDATE content_drafts SET
+        meta_ads_payload = $1, ac_email_payload = $2,
+        meta_ads_original = $1, ac_email_original = $2,
+        dist_edited = COALESCE(dist_edited, '{}'::jsonb) || '{"ads":false,"email":false}'::jsonb,
+        updated_at = now()
+      WHERE workflow_run_id = $3`,
+    [JSON.stringify(metaAds), JSON.stringify(acEmail), runId]
+  );
+  await endStage(runId, 'distgen', 'done', 'Ad creative and campaign email generated from the published post');
   await auditMsg(
     runId,
     'api',
-    'GPT-4o (brand voice in system prompt): distribution payloads generated — ad creative, email, LinkedIn/FB/IG captions',
+    'GPT-4o (brand voice in system prompt): ad creative + campaign email generated',
     'distgen.completed'
   );
   await saga.transition(runId, 'dist_generating', 'dist_review', 'dist_review');
@@ -715,12 +813,12 @@ async function jobDistGen(job: Job): Promise<void> {
   await auditMsg(
     runId,
     'system',
-    'Paused — distribution review gate (human approval required; auto-approve never applies here)',
+    'Paused — distribution review gate ③ (human approval required; auto-approve never applies here)',
     'distreview.paused'
   );
   await sendAlert({
     kind: 'needs_review',
-    title: 'Distribution awaiting approval (ad · email · social)',
+    title: 'Ads and email awaiting approval',
     detail: 'Nothing publishes until this is approved.',
     runId
   });

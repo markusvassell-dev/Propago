@@ -63,16 +63,23 @@ design/                           Hifi HTML design reference (see above)
 ## Saga state machine
 
 ```
-triggered → generating → seo_review ⇄ revision/remake
-  seo_review → deploying → dist_generating → dist_review   (gate 2 — always human)
-  dist_review → publishing → completing → complete
-  seo_review → rejected   (terminal — human discarded the run; nothing published)
+triggered → generating → deploying → seo_review ⇄ revision/remake   (gate 1)
+  seo_review    → publishing_live → social_generating → social_review  (gate 2 — always human)
+  social_review → social_publishing → dist_generating → dist_review    (gate 3 — always human)
+  dist_review   → publishing → completing → complete
+  seo_review    → rejected  (terminal — nothing was ever public; the WP draft is trashed)
+  social_review → aborted   (terminal — blog STAYS live, remaining distribution cancelled)
+  dist_review   → aborted   (terminal — blog + social stay live, ads/email cancelled)
   any blocking step → failed  (retries exhausted → "Workflow Failed" on Karbon timeline)
 ```
 
 `generating` internally covers four sub-steps the dashboard renders as separate pipeline stages (DESIGN_SPEC.md §2): research (SerpAPI web/news search → ChatGPT pain-point extraction with the Levenshtein > 0.7 duplicate guard; with a real `SERPAPI_KEY` the extract is grounded in live sources with real citations, otherwise it runs GPT-only), draft generation, the Uniqueness Registry check (SHA-256 exact + TF-IDF cosine ≥ 0.82 ⇒ blocked and regenerated), and the auto-SEO loop (score < threshold ⇒ suggestions applied and regenerated, max 3 loops).
 
 Every transition is a guarded `UPDATE … WHERE status = <expected>`: a second reviewer, a double-click, or a replayed job gets 0 rows and a `409 Conflict` — never a silent overwrite. Auto-approve (configurable threshold, default 80) applies to gate 1 only.
+
+**Three gates, one batch each.** The blog post is written to WordPress as a **draft** before gate 1, so the reviewer previews it inside the real theme; approving flips that same post to `publish`. Social captions are then generated from the live URL and pause at gate 2 — approving posts them immediately. Ad creative and the campaign email are generated last and pause at gate 3. Nothing is generated ahead of its own gate, so a run abandoned at gate 2 never spends tokens on ad copy.
+
+Gates 2 and 3 sit *after* the post is public, so "reject" cannot mean "discard the run" there. They offer **Skip** (pass on this batch, continue), **Regenerate** (discard the copy and rewrite it) and **Abort** (terminal — cancels every remaining channel; already-published content stays published and Karbon is still notified).
 
 **Gate 1 actions** (`seo_review`): **Approve** → deploy (admin/reviewer) · **Edit draft** (any role, logged) · **Request revision** with a note → loops to generation (admin/reviewer) · **Remake** → discards the draft and regenerates from scratch, no note (any role — matches the prototype) · **Reject** → terminal, run discarded (admin/reviewer). Rejection posts no Karbon failure note — that's reserved for system failures; it's visible in the dashboard and audit trail.
 

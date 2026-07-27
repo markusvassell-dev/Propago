@@ -27,7 +27,7 @@ export interface DistributionPayloads {
   social: SocialPayload;
 }
 
-export async function generateDistributionPayloads(input: {
+export interface DistributionInput {
   topic: string;
   blogTitle: string;
   metaDescription: string;
@@ -36,26 +36,30 @@ export async function generateDistributionPayloads(input: {
   leadMagnetName: string;
   keywords: string[];
   brandVoice: string;
-}): Promise<DistributionPayloads> {
-  if (env.openaiStub) return deterministicFallback(input);
+}
 
-  const system = [
-    'You write distribution copy for a financial advisory firm.',
-    `BRAND VOICE (must be followed exactly): ${input.brandVoice}`,
-    'Return STRICT JSON with keys: metaAds {headline, primaryText, link}, acEmail {subject, body}, social {linkedin, facebook, instagram}.',
-    'Constraints: headline ≤ 40 chars; primaryText ≤ 125 chars; email body is plain text, greets with {{ first_name }}, includes the lead magnet link then the blog link; linkedin/facebook captions include the blog URL; instagram caption has NO links and ends with "link in bio" plus 2–3 niche hashtags.',
-    'Business-focused, zero fluff. Never use exclamation marks.'
-  ].join('\n');
+/** Shared prompt scaffolding for both generation stages. */
+function messages(input: DistributionInput, task: string, shape: string, constraints: string) {
+  return {
+    system: [
+      `You write ${task} for a financial advisory firm.`,
+      `BRAND VOICE (must be followed exactly): ${input.brandVoice}`,
+      `Return STRICT JSON with keys: ${shape}.`,
+      `Constraints: ${constraints}`,
+      'Business-focused, zero fluff. Never use exclamation marks.'
+    ].join('\n'),
+    user: JSON.stringify({
+      topic: input.topic,
+      blogTitle: input.blogTitle,
+      teaser: input.metaDescription,
+      blogUrl: input.liveUrl,
+      leadMagnet: { name: input.leadMagnetName, url: input.leadMagnetUrl },
+      keywords: input.keywords
+    })
+  };
+}
 
-  const user = JSON.stringify({
-    topic: input.topic,
-    blogTitle: input.blogTitle,
-    teaser: input.metaDescription,
-    blogUrl: input.liveUrl,
-    leadMagnet: { name: input.leadMagnetName, url: input.leadMagnetUrl },
-    keywords: input.keywords
-  });
-
+async function chat<T>(system: string, user: string): Promise<T> {
   const res = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
@@ -72,11 +76,50 @@ export async function generateDistributionPayloads(input: {
       timeout: 45_000
     }
   );
+  return JSON.parse(res.data.choices[0].message.content) as T;
+}
 
-  const parsed = JSON.parse(res.data.choices[0].message.content) as DistributionPayloads;
+/**
+ * Stage `socialgen` — the three platform captions only. Runs straight after
+ * the post goes live, so the captions can quote the real published URL.
+ */
+export async function generateSocialCaptions(input: DistributionInput): Promise<SocialPayload> {
+  if (env.openaiStub) return deterministicFallback(input).social;
+  const { system, user } = messages(
+    input,
+    'organic social captions',
+    'linkedin, facebook, instagram (all strings)',
+    'linkedin and facebook captions include the blog URL; instagram caption has NO links and ends with "link in bio" plus 2–3 niche hashtags.'
+  );
+  const parsed = await chat<SocialPayload>(system, user);
+  return {
+    linkedin: parsed.linkedin ?? '',
+    facebook: parsed.facebook ?? '',
+    instagram: parsed.instagram ?? ''
+  };
+}
+
+/**
+ * Stage `distgen` — paid ad creative + the campaign email. Runs after the
+ * social batch has been approved and posted (gate ②).
+ */
+export async function generateAdsAndEmail(
+  input: DistributionInput
+): Promise<{ metaAds: MetaAdsPayload; acEmail: AcEmailPayload }> {
+  if (env.openaiStub) {
+    const { metaAds, acEmail } = deterministicFallback(input);
+    return { metaAds, acEmail };
+  }
+  const { system, user } = messages(
+    input,
+    'paid ad creative and campaign email copy',
+    'metaAds {headline, primaryText, link}, acEmail {subject, body}',
+    'headline ≤ 40 chars; primaryText ≤ 125 chars; email body is plain text, greets with {{ first_name }}, includes the lead magnet link then the blog link.'
+  );
+  const parsed = await chat<{ metaAds: MetaAdsPayload; acEmail: AcEmailPayload }>(system, user);
   // Hard-enforce Meta limits even if the model drifts.
-  parsed.metaAds.headline = parsed.metaAds.headline.slice(0, 40);
-  parsed.metaAds.primaryText = parsed.metaAds.primaryText.slice(0, 125);
+  parsed.metaAds.headline = (parsed.metaAds.headline ?? '').slice(0, 40);
+  parsed.metaAds.primaryText = (parsed.metaAds.primaryText ?? '').slice(0, 125);
   parsed.metaAds.link ||= env.activeCampaign.signupFormUrl;
   return parsed;
 }

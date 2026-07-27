@@ -53,7 +53,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     api.get<BuildInfo>('/api/version').then(setVer).catch(() => setVer(null));
   }, []);
 
-  const reviewCount = runs.filter((r) => r.status === 'review' || r.status === 'distreview').length;
+  const reviewCount = runs.filter((r) => r.status === 'review' || r.status === 'socialreview' || r.status === 'distreview').length;
   const acctCount = runs.filter((r) => r.status === 'review').length;
   const nActive = runs.filter((r) => r.status === 'running').length;
 

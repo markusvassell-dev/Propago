@@ -5,6 +5,11 @@ import { renderElementThemeHtml } from '../services/blogHtml';
 
 // WordPress adapter (default CmsPublisher). Uses the REST API with an
 // Application Password (Users → Profile → Application Passwords).
+//
+// TWO-STEP PUBLISH: publishPost() creates the post as a DRAFT so the reviewer
+// at gate ① previews it inside the real Element Accounting theme rather than
+// judging raw markdown; approving calls publishLive() to flip that same post
+// to status=publish. Nothing is publicly reachable before a human approves.
 // Posts land inside the site's EXISTING Element Accounting theme at
 // elementaccounting.ca/blog/ (rule 12): the adapter ships clean semantic
 // markup (h2 headings, ul lists, figures) via renderElementThemeHtml and the
@@ -32,15 +37,17 @@ export class WordPressAdapter implements CmsPublisher {
   }): Promise<CmsPublishResult> {
     if (!env.wordpress.baseUrl) {
       // Structural stub for local dev: log the exact payload we would send.
-      console.info('[wordpress:stub] would publish', {
+      console.info('[wordpress:stub] would create draft', {
         title: input.title,
         excerpt: input.metaDescription,
         contentBytes: input.markdown.length
       });
+      const id = `stub_${Date.now()}`;
       return {
         liveUrl: `https://elementaccounting.ca/blog/${slugify(input.topicSlugSource || input.title)}`,
-        cmsPostId: `stub_${Date.now()}`,
-        leadMagnetUrl: input.leadMagnetUrl
+        cmsPostId: id,
+        leadMagnetUrl: input.leadMagnetUrl,
+        previewUrl: `https://elementaccounting.ca/?p=${id}&preview=true`
       };
     }
 
@@ -59,7 +66,8 @@ export class WordPressAdapter implements CmsPublisher {
         title: input.title,
         content,
         excerpt: input.metaDescription,
-        status: 'publish'
+        // DRAFT, not publish — gate ① approval flips it via publishLive().
+        status: 'draft'
       },
       {
         headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json' },
@@ -70,13 +78,56 @@ export class WordPressAdapter implements CmsPublisher {
       }
     );
 
+    const id = String(res.data.id);
     return {
+      // `link` on a draft is the slug it WILL have once published — good enough
+      // for the archive record; publishLive() overwrites it with the real one.
       liveUrl: res.data.link,
-      cmsPostId: String(res.data.id),
+      cmsPostId: id,
       // The magnet stays on the generator's public URL; sideload into WP Media
       // here instead if you need same-origin hosting.
-      leadMagnetUrl: input.leadMagnetUrl
+      leadMagnetUrl: input.leadMagnetUrl,
+      previewUrl: `${env.wordpress.baseUrl}/?p=${id}&preview=true`
     };
+  }
+
+  /**
+   * Flips a draft created by publishPost() to status=publish. Separate call so
+   * the reviewer's approval is what makes the post public — see gate ① in
+   * src/saga/stages.ts.
+   */
+  async publishLive(postId: string): Promise<{ liveUrl: string }> {
+    if (!env.wordpress.baseUrl) {
+      console.info('[wordpress:stub] would publish live', { postId });
+      return { liveUrl: `https://elementaccounting.ca/blog/${postId}` };
+    }
+    const res = await axios.post(
+      `${env.wordpress.baseUrl}/wp-json/wp/v2/posts/${postId}`,
+      { status: 'publish' },
+      {
+        headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json' },
+        timeout: 20_000,
+        validateStatus: (s) => s >= 200 && s < 300
+      }
+    );
+    return { liveUrl: res.data.link };
+  }
+
+  /**
+   * Moves a post to the WordPress trash. Used to clean up the draft when a run
+   * is rejected at gate ① — otherwise every rejected run leaves an orphan draft
+   * behind, three per Karbon trigger.
+   */
+  async trashPost(postId: string): Promise<void> {
+    if (!env.wordpress.baseUrl) {
+      console.info('[wordpress:stub] would trash', { postId });
+      return;
+    }
+    await axios.delete(`${env.wordpress.baseUrl}/wp-json/wp/v2/posts/${postId}`, {
+      headers: { Authorization: this.authHeader() },
+      timeout: 20_000,
+      validateStatus: (s) => s >= 200 && s < 300
+    });
   }
 }
 

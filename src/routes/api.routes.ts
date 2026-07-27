@@ -14,6 +14,13 @@ import {
   rejectDraft,
   saveOverrides,
   publishAll,
+  approveSocial,
+  skipSocial,
+  regenerateSocial,
+  skipDistribution,
+  regenerateDistribution,
+  abortRun,
+  ChannelSelection,
   retryFailedRun,
   ConflictError,
   auditMsg
@@ -121,12 +128,25 @@ apiRouter.get(
   })
 );
 
-// ---- Review queue (both gates) ----
+/**
+ * Reads an optional per-run channel selection off a gate request body. Only the
+ * keys the gate actually owns are honoured, so a stray `ads: false` posted to
+ * the social gate can't silently disable a channel that gate doesn't control.
+ */
+function pickChannels(body: unknown, allowed: readonly (keyof ChannelSelection)[]): ChannelSelection | undefined {
+  const raw = (body as { channels?: Record<string, unknown> } | undefined)?.channels;
+  if (!raw) return undefined;
+  const out: ChannelSelection = {};
+  for (const k of allowed) if (typeof raw[k] === 'boolean') out[k] = raw[k] as boolean;
+  return Object.keys(out).length ? out : undefined;
+}
+
+// ---- Review queue (all three gates) ----
 apiRouter.get(
   '/review-queue',
   wrap(async (req, res) => {
     const { rows } = await query<RunApiRow>(
-      `${RUN_SELECT} WHERE r.status IN ('seo_review','dist_review') ORDER BY r.updated_at ASC`
+      `${RUN_SELECT} WHERE r.status IN ('seo_review','social_review','dist_review') ORDER BY r.updated_at ASC`
     );
     const items = [] as Array<Record<string, unknown>>;
     for (const r of rows) {
@@ -208,7 +228,7 @@ apiRouter.patch(
   })
 );
 
-// ---- Gate 2 (distribution) ----
+// ---- Gates ② (social) and ③ (ads + email) ----
 apiRouter.patch(
   '/runs/:id/distribution/:channel',
   wrap(async (req, res) => {
@@ -231,16 +251,74 @@ apiRouter.post(
   '/runs/:id/publish-all',
   requireRole('admin', 'reviewer'),
   wrap(async (req, res) => {
-    // Optional per-run channel picks: { channels: { ads?, email?, social? } }.
-    // Absent ⇒ fall back to the global adapters_enabled Settings default.
-    const raw = (req.body as { channels?: Record<string, unknown> } | undefined)?.channels;
-    const selection = raw
-      ? (['ads', 'email', 'social'] as const).reduce<Record<string, boolean>>((acc, k) => {
-          if (typeof raw[k] === 'boolean') acc[k] = raw[k] as boolean;
-          return acc;
-        }, {})
-      : undefined;
-    await publishAll(req.params.id, req.user!.id, req.user!.handle, selection);
+    // Optional per-run channel picks: { channels: { ads?, email? } }. Absent ⇒
+    // fall back to the global adapters_enabled Settings default.
+    await publishAll(req.params.id, req.user!.id, req.user!.handle, pickChannels(req.body, ['ads', 'email']));
+    res.json({ ok: true });
+  })
+);
+
+apiRouter.post(
+  '/runs/:id/skip-distribution',
+  requireRole('admin', 'reviewer'),
+  wrap(async (req, res) => {
+    await skipDistribution(req.params.id, req.user!.id, req.user!.handle);
+    res.json({ ok: true });
+  })
+);
+
+apiRouter.post(
+  '/runs/:id/regenerate-distribution',
+  requireRole('admin', 'reviewer'),
+  wrap(async (req, res) => {
+    const note = String((req.body as { note?: string })?.note ?? '').slice(0, 2000);
+    await regenerateDistribution(req.params.id, note, req.user!.id, req.user!.handle);
+    res.json({ ok: true });
+  })
+);
+
+// ---- Gate ② actions (social) ----
+apiRouter.post(
+  '/runs/:id/approve-social',
+  requireRole('admin', 'reviewer'),
+  wrap(async (req, res) => {
+    await approveSocial(
+      req.params.id,
+      req.user!.id,
+      req.user!.handle,
+      pickChannels(req.body, ['linkedin', 'facebook', 'instagram'])
+    );
+    res.json({ ok: true });
+  })
+);
+
+apiRouter.post(
+  '/runs/:id/skip-social',
+  requireRole('admin', 'reviewer'),
+  wrap(async (req, res) => {
+    await skipSocial(req.params.id, req.user!.id, req.user!.handle);
+    res.json({ ok: true });
+  })
+);
+
+apiRouter.post(
+  '/runs/:id/regenerate-social',
+  requireRole('admin', 'reviewer'),
+  wrap(async (req, res) => {
+    const note = String((req.body as { note?: string })?.note ?? '').slice(0, 2000);
+    await regenerateSocial(req.params.id, note, req.user!.id, req.user!.handle);
+    res.json({ ok: true });
+  })
+);
+
+// Abort: terminal stop at gate ② or ③. Whatever is already public STAYS public
+// — this cancels the remaining channels, it does not retract anything.
+apiRouter.post(
+  '/runs/:id/abort',
+  requireRole('admin', 'reviewer'),
+  wrap(async (req, res) => {
+    const reason = String((req.body as { reason?: string })?.reason ?? '').slice(0, 2000);
+    await abortRun(req.params.id, req.user!.id, req.user!.handle, reason);
     res.json({ ok: true });
   })
 );

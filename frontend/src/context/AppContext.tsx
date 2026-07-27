@@ -50,8 +50,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (prev.size) {
         for (const run of r.runs) {
           const old = prev.get(run.id);
-          if (old && old.status === 'running' && run.status === 'distreview') {
-            showToast(`${run.wf} distribution payloads ready for review`);
+          if (old && old.status === 'running' && run.status === 'socialreview') {
+            showToast(`${run.wf} social captions ready for review`);
+          } else if (old && old.status === 'running' && run.status === 'distreview') {
+            showToast(`${run.wf} ad creative and email ready for review`);
           } else if (
             old &&
             old.status === 'review' &&

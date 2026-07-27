@@ -60,10 +60,13 @@ export interface CmsPublishResult {
   liveUrl: string;
   cmsPostId: string;
   leadMagnetUrl: string;
+  /** Logged-in preview link for a draft (WP `?p=<id>&preview=true`). */
+  previewUrl?: string;
 }
 
 export interface CmsPublisher {
   readonly name: string;
+  /** Creates the post as a DRAFT — see WordPressAdapter for the two-step flow. */
   publishPost(input: {
     title: string;
     markdown: string;
@@ -72,6 +75,8 @@ export interface CmsPublisher {
     existingPostId?: string; // update-in-place on revision redeploys
     topicSlugSource?: string; // spec §2 slug rule — slug comes from the topic
   }): Promise<CmsPublishResult>;
+  /** Flips an existing draft to status=publish. Called on gate ① approval. */
+  publishLive(postId: string): Promise<{ liveUrl: string }>;
 }
 
 // ---------- Paid ads (Meta Marketing API, sandbox until app review) ----------

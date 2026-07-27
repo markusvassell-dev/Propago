@@ -106,7 +106,7 @@ export default function Archive() {
     if (filter === ACCT_STATUS) return r.status === 'review';
     if (filter === 'Published') return r.status === 'complete';
     if (filter === 'Failed') return r.status === 'failed';
-    return r.status === 'running' || r.status === 'distreview';
+    return r.status === 'running' || r.status === 'socialreview' || r.status === 'distreview';
   };
   const cards = runs.filter(match);
 

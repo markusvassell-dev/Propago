@@ -9,15 +9,39 @@ import PreviewModal from '../components/PreviewModal';
 import { FacebookPreview, LinkedInPreview, InstagramPreview, MetaAdPreview, EmailPreview } from '../components/ChannelPreviews';
 import { fmtAgo, slug3Of } from '../lib/format';
 
-// Review queue (DESIGN_SPEC §7) — both human gates in one page.
-//   Gate 1 (review):     Blog tab, approve / edit / revision / remake / reject.
-//   Gate 2 (distreview): Meta Ads / Email / Social editable; Publish All.
+// Review queue (DESIGN_SPEC §7) — all three human gates in one page.
+//   Gate ① (review):       Blog tab. Approve (WP draft → live) / edit / revision
+//                          / remake / reject. Nothing is public yet, so reject
+//                          discards the whole run.
+//   Gate ② (socialreview): LinkedIn / Facebook / Instagram captions. Approve
+//                          posts them; skip / regenerate / abort.
+//   Gate ③ (distreview):   Meta Ads + Email. Approve publishes them; skip /
+//                          regenerate / abort.
+// Gates ② and ③ come AFTER the post is live, so neither can discard the run —
+// abort stops what's left, it never retracts what's already public.
 
 type Tab = 'blog' | 'ads' | 'email' | 'social';
 
 const emptyAds: AdsPayload = { headline: '', primary: '', link: '' };
 const emptyEmail: EmailPayload = { subject: '', body: '' };
 const emptySocial: SocialPayload = { linkedin: '', facebook: '', instagram: '' };
+
+/** Channel keys, split by which gate releases them. */
+const SOCIAL_KEYS = ['linkedin', 'facebook', 'instagram'] as const;
+const DIST_KEYS = ['ads', 'email'] as const;
+type ChannelKey = (typeof SOCIAL_KEYS)[number] | (typeof DIST_KEYS)[number];
+type ChannelPicks = Record<ChannelKey, boolean>;
+const allOn: ChannelPicks = { linkedin: true, facebook: true, instagram: true, ads: true, email: true };
+const CHANNEL_LABEL: Record<ChannelKey, string> = {
+  linkedin: 'LinkedIn',
+  facebook: 'Facebook',
+  instagram: 'Instagram',
+  ads: 'Meta Ads',
+  email: 'Email (ActiveCampaign)'
+};
+
+/** Stage index each gate waits at — positional into stage_state (17 stages). */
+const GATE_STAGE_IDX: Record<string, number> = { review: 5, socialreview: 8, distreview: 13 };
 
 export default function Review() {
   const { user, canApprove } = useAuth();
@@ -35,8 +59,11 @@ export default function Review() {
   const [ads, setAds] = useState<AdsPayload>(emptyAds);
   const [email, setEmail] = useState<EmailPayload>(emptyEmail);
   const [social, setSocial] = useState<SocialPayload>(emptySocial);
-  // Per-run channel picks at the distribution gate (default all on).
-  const [chan, setChan] = useState<{ ads: boolean; email: boolean; social: boolean }>({ ads: true, email: true, social: true });
+  // Per-run channel picks at the publish gates (default all on). Gate ② owns
+  // the three platform keys, gate ③ owns ads + email.
+  const [chan, setChan] = useState<ChannelPicks>({ ...allOn });
+  const [aborting, setAborting] = useState(false);
+  const [abortReason, setAbortReason] = useState('');
   const loadedFor = useRef<string | null>(null);
 
   const load = useCallback(async () => {
@@ -55,7 +82,10 @@ export default function Review() {
   }, [load]);
 
   const sel = useMemo(() => items.find((i) => i.id === selId) ?? items[0] ?? null, [items, selId]);
+  const isSocial = sel?.status === 'socialreview';
   const isDist = sel?.status === 'distreview';
+  // Anything past gate ①: the blog post is already public.
+  const isPostLive = isSocial || isDist;
 
   // Presence heartbeat for the open item (peer-viewing banner).
   useEffect(() => {
@@ -72,10 +102,12 @@ export default function Review() {
     setAds(sel.dist?.ads ?? emptyAds);
     setEmail(sel.dist?.email ?? emptyEmail);
     setSocial(sel.dist?.social ?? emptySocial);
-    setTab(sel.status === 'distreview' ? 'ads' : 'blog');
-    setChan({ ads: true, email: true, social: true });
+    setTab(sel.status === 'distreview' ? 'ads' : sel.status === 'socialreview' ? 'social' : 'blog');
+    setChan({ ...allOn });
     setEditing(false);
     setRevising(false);
+    setAborting(false);
+    setAbortReason('');
     setPdfOpen(false);
   }, [sel?.id, sel?.status]);
 
@@ -102,7 +134,7 @@ export default function Review() {
     if (!canApprove) return showToast('Editor role can’t approve — admin or reviewer required');
     try {
       await api.post(`/api/runs/${sel.id}/approve`);
-      showToast(`${sel.wf} approved by ${user!.handle} → deploy queued`);
+      showToast(`${sel.wf} approved by ${user!.handle} → WordPress draft going live`);
       await Promise.all([load(), refreshRuns()]);
     } catch (err) {
       conflictToast(err, (wf, who) => `${wf} was already approved by ${who} — nothing overwritten`);
@@ -170,21 +202,82 @@ export default function Review() {
     showToast(`${names[ch]} payload reset to generated version`);
   };
 
+  /** Gate ③ — Meta Ads + ActiveCampaign email. */
   const publishAll = async () => {
     if (!sel) return;
     if (!canApprove) return showToast('Editor role can’t publish — admin or reviewer required');
-    if (!chan.ads && !chan.email && !chan.social) return showToast('Select at least one channel to publish');
+    const on = DIST_KEYS.filter((k) => chan[k]);
+    if (!on.length) return showToast('Select at least one channel, or use Skip');
     try {
-      // Only save edits for channels being published.
+      // Only save edits for channels actually being published.
       if (chan.ads) await api.patch(`/api/runs/${sel.id}/distribution/meta_ads`, ads);
       if (chan.email) await api.patch(`/api/runs/${sel.id}/distribution/ac_email`, email);
-      if (chan.social) await api.patch(`/api/runs/${sel.id}/distribution/social`, social);
       await api.post(`/api/runs/${sel.id}/publish-all`, { channels: chan });
-      const on = (['ads', 'email', 'social'] as const).filter((k) => chan[k]).map((k) => names[k]).join(' · ');
-      showToast(`${sel.wf} → publishing ${on || 'nothing'}`);
+      showToast(`${sel.wf} → publishing ${on.map((k) => CHANNEL_LABEL[k]).join(' · ')}`);
       await Promise.all([load(), refreshRuns()]);
     } catch (err) {
       conflictToast(err, (wf, who) => `${wf} was already published by ${who} — nothing overwritten`);
+    }
+  };
+
+  /** Gate ② — LinkedIn / Facebook / Instagram. Approval posts immediately. */
+  const approveSocial = async () => {
+    if (!sel) return;
+    if (!canApprove) return showToast('Editor role can’t publish — admin or reviewer required');
+    const on = SOCIAL_KEYS.filter((k) => chan[k]);
+    if (!on.length) return showToast('Select at least one platform, or use Skip');
+    try {
+      await api.patch(`/api/runs/${sel.id}/distribution/social`, social);
+      await api.post(`/api/runs/${sel.id}/approve-social`, { channels: chan });
+      showToast(`${sel.wf} → posting to ${on.map((k) => CHANNEL_LABEL[k]).join(' · ')}`);
+      await Promise.all([load(), refreshRuns()]);
+    } catch (err) {
+      conflictToast(err, (wf, who) => `${wf} was already handled by ${who} — nothing overwritten`);
+    }
+  };
+
+  /** Skip this batch and continue the run (gates ② and ③). */
+  const skipBatch = async () => {
+    if (!sel) return;
+    if (!canApprove) return showToast('Editor role can’t skip — admin or reviewer required');
+    const path = isSocial ? 'skip-social' : 'skip-distribution';
+    try {
+      await api.post(`/api/runs/${sel.id}/${path}`);
+      showToast(isSocial ? `${sel.wf} → social skipped · generating ads and email` : `${sel.wf} → ads and email skipped · completing`);
+      await Promise.all([load(), refreshRuns()]);
+    } catch (err) {
+      conflictToast(err, (wf, who) => `${wf} was already handled by ${who} — nothing overwritten`);
+    }
+  };
+
+  /** Throw this batch away and have GPT write it again (gates ② and ③). */
+  const regenerateBatch = async () => {
+    if (!sel) return;
+    if (!canApprove) return showToast('Editor role can’t regenerate — admin or reviewer required');
+    const path = isSocial ? 'regenerate-social' : 'regenerate-distribution';
+    try {
+      await api.post(`/api/runs/${sel.id}/${path}`, { note: revNote });
+      setRevNote('');
+      setRevising(false);
+      showToast(`${sel.wf} → regenerating ${isSocial ? 'social captions' : 'ad creative and email'}`);
+      await Promise.all([load(), refreshRuns()]);
+    } catch (err) {
+      conflictToast(err, (wf, who) => `${wf} was already handled by ${who} — nothing sent`);
+    }
+  };
+
+  /** Terminal stop. Published content stays published — see abortRun(). */
+  const abort = async () => {
+    if (!sel) return;
+    if (!canApprove) return showToast('Editor role can’t abort — admin or reviewer required');
+    try {
+      await api.post(`/api/runs/${sel.id}/abort`, { reason: abortReason });
+      setAbortReason('');
+      setAborting(false);
+      showToast(`${sel.wf} aborted — published content stays live, remaining channels cancelled`);
+      await Promise.all([load(), refreshRuns()]);
+    } catch (err) {
+      conflictToast(err, (wf, who) => `${wf} was already handled by ${who} — nothing overwritten`);
     }
   };
 
@@ -195,7 +288,8 @@ export default function Review() {
         <MicroLabel>queue clear</MicroLabel>
         <div className="disp" style={{ fontSize: 19, fontWeight: 600, marginTop: 8 }}>0 drafts awaiting review</div>
         <p style={{ fontSize: 12, color: 'var(--tx2)', maxWidth: 440, lineHeight: 1.65, marginTop: 8 }}>
-          Runs pause here twice — once for the blog draft after SEO scoring, and again for ad, email and social payloads before anything publishes.
+          Runs pause here three times — the blog draft after SEO scoring, then the social captions, then the ad and email copy. Each gate releases
+          only its own batch.
         </p>
       </div>
     );
@@ -203,7 +297,7 @@ export default function Review() {
 
   const seo = sel.seo;
   const th = 80;
-  const waitSince = sel.stages[isDist ? 7 : 4]?.startedAt ?? sel.updatedAt;
+  const waitSince = sel.stages[GATE_STAGE_IDX[sel.status] ?? 5]?.startedAt ?? sel.updatedAt;
   const peer = (sel.viewers ?? [])[0];
   const counter = (n: number, max: number) => (
     <span className="mono" style={{ fontSize: 10, color: n > max ? 'var(--red)' : 'var(--tx3)' }}>{n}/{max}</span>
@@ -221,6 +315,12 @@ export default function Review() {
     </div>
   );
   const editorDim = !canApprove ? 'btn-editor-dim' : '';
+  const gateKeys = isSocial ? SOCIAL_KEYS : DIST_KEYS;
+  const activeCount = gateKeys.filter((k) => chan[k]).length;
+  const totalCount = gateKeys.length;
+  // All three captions live in one payload, so any social edit marks all three.
+  const editedFor = (k: ChannelKey): boolean =>
+    k === 'ads' ? edited.ads : k === 'email' ? edited.email : edited.social;
 
   return (
     <div>
@@ -229,7 +329,12 @@ export default function Review() {
       <div style={{ display: 'flex', gap: 10, overflowX: 'auto', padding: '10px 2px 4px' }}>
         {items.map((i) => {
           const isSel = i.id === sel.id;
-          const g = i.status === 'distreview';
+          const gatePill =
+            i.status === 'distreview'
+              ? { label: 'ads + email', color: 'var(--cyn)', bg: 'rgba(14,116,144,.1)' }
+              : i.status === 'socialreview'
+                ? { label: 'social', color: 'var(--vio)', bg: 'rgba(91,79,194,.1)' }
+                : { label: 'content', color: 'var(--vio)', bg: 'rgba(91,79,194,.1)' };
           return (
             <button
               key={i.id}
@@ -250,11 +355,8 @@ export default function Review() {
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                 <span className="mono" style={{ fontSize: 11, fontWeight: 600 }}>{i.wf}</span>
-                <span
-                  className="pill"
-                  style={g ? { color: 'var(--cyn)', background: 'rgba(14,116,144,.1)' } : { color: 'var(--vio)', background: 'rgba(91,79,194,.1)' }}
-                >
-                  {g ? 'distribution' : 'content'}
+                <span className="pill" style={{ color: gatePill.color, background: gatePill.bg }}>
+                  {gatePill.label}
                 </span>
                 {i.seo && (
                   <span className="mono" style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 600, color: i.seo.total >= th ? 'var(--grn)' : 'var(--amb)' }}>
@@ -266,7 +368,7 @@ export default function Review() {
                 {i.draft?.title ?? i.topic}
               </div>
               <div style={{ fontSize: 10, color: 'var(--tx3)', marginTop: 5 }}>
-                {i.client} · waiting {fmtAgo(i.stages[i.status === 'distreview' ? 7 : 4]?.startedAt ?? i.updatedAt).replace(' ago', '')}
+                {i.client} · waiting {fmtAgo(i.stages[GATE_STAGE_IDX[i.status] ?? 5]?.startedAt ?? i.updatedAt).replace(' ago', '')}
               </div>
             </button>
           );
@@ -276,7 +378,7 @@ export default function Review() {
       {/* §7.3 main grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 300px', gap: 14, marginTop: 10 }}>
         <div className="card" style={{ padding: '16px 20px' }}>
-          {!isDist && peer && (
+          {peer && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 9, background: 'rgba(217,119,6,.1)', borderRadius: 8, padding: '9px 12px', marginBottom: 12 }}>
               <span className="nf-pulse" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ambH)', flexShrink: 0 }} />
               <span style={{ fontSize: 11.5, color: 'var(--amb)' }}>
@@ -304,8 +406,8 @@ export default function Review() {
           {tab === 'blog' && sel.draft && (
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                <span className="pill" style={isDist ? { color: 'var(--grn)', background: 'rgba(19,122,91,.12)' } : { color: 'var(--vio)', background: 'rgba(91,79,194,.14)' }}>
-                  {isDist ? 'approved' : 'draft'}
+                <span className="pill" style={isPostLive ? { color: 'var(--grn)', background: 'rgba(19,122,91,.12)' } : { color: 'var(--vio)', background: 'rgba(91,79,194,.14)' }}>
+                  {isPostLive ? 'published' : 'wp draft'}
                 </span>
                 <span className="mono" style={{ fontSize: 10.5, color: 'var(--tx3)' }}>
                   {(sel.draft.words ?? 0).toLocaleString('en-US')} words · {sel.revisions === 0 ? 'first draft' : `revision ${sel.revisions}`}
@@ -384,7 +486,7 @@ export default function Review() {
           {/* ── Meta Ads tab ── */}
           {tab === 'ads' &&
             (!isDist ? (
-              <PendingPlaceholder />
+              <PendingPlaceholder what="Ad creative" after="the social batch is approved or skipped" />
             ) : (
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
@@ -420,7 +522,7 @@ export default function Review() {
           {/* ── Email tab ── */}
           {tab === 'email' &&
             (!isDist ? (
-              <PendingPlaceholder />
+              <PendingPlaceholder what="Campaign email" after="the social batch is approved or skipped" />
             ) : (
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
@@ -453,8 +555,8 @@ export default function Review() {
 
           {/* ── Social tab ── */}
           {tab === 'social' &&
-            (!isDist ? (
-              <PendingPlaceholder />
+            (!isPostLive ? (
+              <PendingPlaceholder what="Social captions" after="the post goes live" />
             ) : (
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
@@ -498,7 +600,7 @@ export default function Review() {
 
         {/* ── right rail ── */}
         <div>
-          {!isDist ? (
+          {!isPostLive ? (
             <>
               {/* SEO score card (§7.4) */}
               <div className="card" style={{ padding: '14px 17px' }}>
@@ -571,7 +673,7 @@ export default function Review() {
               <div className="card" style={{ padding: '14px 17px', marginTop: 14 }}>
                 {!revising ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <button className={`btn btn-primary ${editorDim}`} onClick={approve}>Approve → deploy</button>
+                    <button className={`btn btn-primary ${editorDim}`} onClick={approve}>Approve → publish live</button>
                     <button
                       className="btn btn-ghost"
                       onClick={() => {
@@ -605,23 +707,33 @@ export default function Review() {
                 <p style={{ fontSize: 10.5, color: 'var(--tx3)', lineHeight: 1.6, marginTop: 11, marginBottom: 0 }}>
                   {user?.role === 'editor'
                     ? 'Signed in as editor — you can edit drafts and payloads, but approve/publish needs an admin or reviewer. Every action is logged with your user id.'
-                    : 'Approval deploys the post, then ad, email and social payloads pause at a distribution gate — nothing publishes without a second sign-off.'}
+                    : 'Approval flips the WordPress draft to published, then social captions pause at gate ②, and ad + email copy at gate ③ — each batch needs its own sign-off.'}
                 </p>
               </div>
             </>
           ) : (
             <>
-              {/* Distribution gate card (§7.5) */}
+              {/* Publish gate card (§7.5) — gate ② social, gate ③ ads + email */}
               <div className="card" style={{ padding: '14px 17px' }}>
-                <MicroLabel style={{ color: 'var(--cyn)' }}>Distribution gate</MicroLabel>
+                <MicroLabel style={{ color: isSocial ? 'var(--vio)' : 'var(--cyn)' }}>
+                  {isSocial ? 'Social gate ②' : 'Ads + email gate ③'}
+                </MicroLabel>
                 <p style={{ fontSize: 11.5, color: 'var(--tx1)', lineHeight: 1.6, marginTop: 7, marginBottom: 0 }}>
-                  Generated from the approved post. Publish jobs are not enqueued until you approve below.
+                  {isSocial
+                    ? 'Written from the published post. Approving posts to the selected platforms immediately, then ad and email copy is generated.'
+                    : 'Written from the published post and the social batch. Approving is the last step before the run reports back to Karbon.'}
                 </p>
-                {[
-                  { k: 'ads' as const, tab: 'ads' as Tab, name: 'Meta Ads', sub: 'LEADGEN campaign · sandbox · limiter 10 req/10s' },
-                  { k: 'email' as const, tab: 'email' as Tab, name: 'ActiveCampaign', sub: '1,842 subscribers + ad-leads segment · limiter 5 req/s' },
-                  { k: 'social' as const, tab: 'social' as Tab, name: 'Organic social', sub: 'LinkedIn · Facebook · Instagram · non-blocking' }
-                ].map((c) => (
+                {(isSocial
+                  ? [
+                      { k: 'linkedin' as ChannelKey, tab: 'social' as Tab, name: 'LinkedIn', sub: 'UGC Posts API · personal profile' },
+                      { k: 'facebook' as ChannelKey, tab: 'social' as Tab, name: 'Facebook', sub: 'Graph API · page feed' },
+                      { k: 'instagram' as ChannelKey, tab: 'social' as Tab, name: 'Instagram', sub: 'Graph API · no links, link in bio' }
+                    ]
+                  : [
+                      { k: 'ads' as ChannelKey, tab: 'ads' as Tab, name: 'Meta Ads', sub: 'LEADGEN campaign · launches PAUSED · 10 req/10s' },
+                      { k: 'email' as ChannelKey, tab: 'email' as Tab, name: 'ActiveCampaign', sub: 'Subscribers + ad-leads segment · 5 req/s' }
+                    ]
+                ).map((c) => (
                   <button
                     key={c.k}
                     className="rowhover"
@@ -631,44 +743,89 @@ export default function Review() {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--tx)' }}>
                         {c.name}
-                        {edited[c.k] && (
+                        {editedFor(c.k) && (
                           <span className="pill" style={{ marginLeft: 7, color: 'var(--amb)', background: 'rgba(217,119,6,.12)' }}>edited</span>
                         )}
                       </div>
                       <div style={{ fontSize: 9.5, color: 'var(--tx3)', marginTop: 2 }}>{c.sub}</div>
                     </div>
-                    <span className="mono" style={{ fontSize: 10, color: 'var(--grn)', flexShrink: 0 }}>will publish</span>
+                    <span className="mono" style={{ fontSize: 10, color: chan[c.k] ? 'var(--grn)' : 'var(--tx3)', flexShrink: 0 }}>
+                      {chan[c.k] ? 'will publish' : 'skipped'}
+                    </span>
                   </button>
                 ))}
               </div>
 
-              {/* Publish card */}
+              {/* Publish / skip / regenerate / abort */}
               <div className="card" style={{ padding: '14px 17px', marginTop: 14 }}>
-                <div className="microlabel" style={{ marginBottom: 8 }}>Channels to publish</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 12 }}>
-                  {([['ads', 'Meta Ads'], ['email', 'Email (ActiveCampaign)'], ['social', 'Social (LinkedIn · Facebook · Instagram)']] as const).map(
-                    ([k, label]) => (
-                      <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
-                        <input type="checkbox" checked={chan[k]} onChange={(e) => setChan((c) => ({ ...c, [k]: e.target.checked }))} />
-                        <span style={{ color: chan[k] ? 'var(--tx)' : 'var(--tx3)' }}>{label}</span>
-                      </label>
-                    )
-                  )}
-                </div>
-                <button
-                  className={`btn btn-primary ${editorDim}`}
-                  style={{ width: '100%', opacity: !chan.ads && !chan.email && !chan.social ? 0.5 : undefined }}
-                  onClick={publishAll}
-                >
-                  Approve &amp; Publish{' '}
-                  {chan.ads && chan.email && chan.social
-                    ? 'All'
-                    : (['ads', 'email', 'social'] as const).filter((k) => chan[k]).length + ' selected'}
-                </button>
-                <p style={{ fontSize: 10.5, color: 'var(--tx3)', lineHeight: 1.6, marginTop: 10, marginBottom: 0 }}>
-                  Uncheck any channel to skip it for this run — deselected channels are marked “skipped” in the pipeline, not failed. Nothing is
-                  enqueued until this approval; edits are saved as manual overrides and logged.
-                </p>
+                {!revising && !aborting && (
+                  <>
+                    <div className="microlabel" style={{ marginBottom: 8 }}>
+                      {isSocial ? 'Platforms to post' : 'Channels to publish'}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 12 }}>
+                      {(isSocial ? SOCIAL_KEYS : DIST_KEYS).map((k) => (
+                        <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
+                          <input type="checkbox" checked={chan[k]} onChange={(e) => setChan((c) => ({ ...c, [k]: e.target.checked }))} />
+                          <span style={{ color: chan[k] ? 'var(--tx)' : 'var(--tx3)' }}>{CHANNEL_LABEL[k]}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <button
+                        className={`btn btn-primary ${editorDim}`}
+                        style={{ width: '100%', opacity: activeCount === 0 ? 0.5 : undefined }}
+                        onClick={isSocial ? approveSocial : publishAll}
+                      >
+                        {isSocial ? 'Approve & Post' : 'Approve & Publish'}{' '}
+                        {activeCount === totalCount ? 'All' : `${activeCount} selected`}
+                      </button>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button className="btn btn-ghost" style={{ flex: 1 }} onClick={skipBatch}>Skip</button>
+                        <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setRevising(true)}>Regenerate</button>
+                      </div>
+                      <button className={`btn btn-red ${editorDim}`} onClick={() => setAborting(true)}>Abort run</button>
+                    </div>
+                    <p style={{ fontSize: 10.5, color: 'var(--tx3)', lineHeight: 1.6, marginTop: 10, marginBottom: 0 }}>
+                      Unchecked channels are marked “skipped” in the pipeline, not failed. Skip passes on this batch entirely and moves the run
+                      forward. Edits are saved as manual overrides and logged.
+                    </p>
+                  </>
+                )}
+
+                {revising && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div className="microlabel">Regenerate {isSocial ? 'captions' : 'ad creative + email'}</div>
+                    <textarea
+                      className="nf-input"
+                      rows={3}
+                      placeholder={isSocial ? 'What should change? e.g. lead with the stat, drop the hashtags' : 'What should change? e.g. sharper headline, shorter email'}
+                      value={revNote}
+                      onChange={(e) => setRevNote(e.target.value)}
+                    />
+                    <button className={`btn btn-redsolid ${editorDim}`} onClick={regenerateBatch}>Send back to generation</button>
+                    <button className="btn btn-ghost" onClick={() => setRevising(false)}>Cancel</button>
+                  </div>
+                )}
+
+                {aborting && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div className="microlabel" style={{ color: 'var(--red)' }}>Abort run</div>
+                    <p style={{ fontSize: 11, color: 'var(--tx1)', lineHeight: 1.6, margin: 0 }}>
+                      The blog post is already live{isDist ? ' and the social posts are already published' : ''} — aborting cannot take
+                      {isDist ? ' those' : ' it'} down. It cancels every remaining channel and reports the run back to Karbon as finished early.
+                    </p>
+                    <textarea
+                      className="nf-input"
+                      rows={2}
+                      placeholder="Why? (recorded in the audit trail)"
+                      value={abortReason}
+                      onChange={(e) => setAbortReason(e.target.value)}
+                    />
+                    <button className={`btn btn-redsolid ${editorDim}`} onClick={abort}>Abort — cancel remaining channels</button>
+                    <button className="btn btn-ghost" onClick={() => setAborting(false)}>Cancel</button>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -680,12 +837,12 @@ export default function Review() {
   );
 }
 
-function PendingPlaceholder() {
+function PendingPlaceholder({ what, after }: { what: string; after: string }) {
   return (
     <div style={{ border: '1px dashed var(--line5)', borderRadius: 8, padding: '32px 24px', textAlign: 'center' }}>
-      <div className="microlabel">payloads pending</div>
+      <div className="microlabel">not generated yet</div>
       <p style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.65, maxWidth: 420, margin: '8px auto 0' }}>
-        Ad creative is generated right after content approval and WordPress deploy, then pauses here at the distribution gate for your review.
+        {what} is written once {after}, then pauses here for your review. Nothing is generated ahead of its gate.
       </p>
     </div>
   );

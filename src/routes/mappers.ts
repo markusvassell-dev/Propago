@@ -3,12 +3,22 @@ import { StageEntry, mkStages, STAGES } from '../saga/stages';
 // Row → API payload shaping (spec §13.7): everything §5–§6 render, in the
 // vocabulary the dashboard uses (ui status, WF-/KB- ids, seo {kw,read,head,meta}).
 
-export type UiStatus = 'running' | 'review' | 'distreview' | 'failed' | 'complete' | 'rejected';
+export type UiStatus =
+  | 'running'
+  | 'review'
+  | 'socialreview'
+  | 'distreview'
+  | 'failed'
+  | 'complete'
+  | 'rejected'
+  | 'aborted';
 
 export function uiStatus(dbStatus: string): UiStatus {
   switch (dbStatus) {
     case 'seo_review':
       return 'review';
+    case 'social_review':
+      return 'socialreview';
     case 'dist_review':
       return 'distreview';
     case 'complete':
@@ -17,8 +27,12 @@ export function uiStatus(dbStatus: string): UiStatus {
       return 'failed';
     case 'rejected':
       return 'rejected';
+    case 'aborted':
+      return 'aborted';
     default:
-      return 'running'; // triggered · generating · revision · deploying · dist_generating · publishing · completing
+      // triggered · generating · revision · deploying · publishing_live ·
+      // social_generating · social_publishing · dist_generating · publishing · completing
+      return 'running';
   }
 }
 

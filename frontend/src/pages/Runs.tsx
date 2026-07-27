@@ -52,7 +52,7 @@ export default function Runs() {
   };
 
   const nActive = runs.filter((r) => r.status === 'running').length;
-  const nReview = runs.filter((r) => r.status === 'review' || r.status === 'distreview').length;
+  const nReview = runs.filter((r) => r.status === 'review' || r.status === 'socialreview' || r.status === 'distreview').length;
   const nFailed = runs.filter((r) => r.status === 'failed').length;
   const nDone = runs.filter((r) => r.status === 'complete').length;
 

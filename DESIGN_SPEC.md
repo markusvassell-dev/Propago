@@ -86,7 +86,9 @@ Google Fonts import (exact):
 |---|---|---|---|
 | `running` | `Running` | `var(--amb)` | `rgba(180,83,9,.11)` |
 | `review` | `In review` | `var(--vio)` | `rgba(91,79,194,.11)` |
-| `distreview` | `Dist. review` | `var(--cyn)` | `rgba(14,116,144,.11)` |
+| `socialreview` | `Review ② social` | `var(--vio)` | `rgba(91,79,194,.11)` |
+| `distreview` | `Review ③ ads/email` | `var(--cyn)` | `rgba(14,116,144,.11)` |
+| `aborted` | `Aborted` | `var(--tx3)` | `rgba(130,130,140,.12)` |
 | `failed` | `Failed` | `var(--red)` | `rgba(179,38,30,.09)` |
 | `complete` | `Complete` | `var(--grn)` | `rgba(19,122,91,.11)` |
 | `rejected` | `Rejected` | `var(--tx3)` | `rgba(130,130,140,.12)` |
@@ -116,9 +118,9 @@ Badge labels: `Done`, `Running`, `Retrying`, `In review`, `Pending`, `Failed`, `
 
 ---
 
-## 2. The pipeline (12 stages)
+## 2. The pipeline (17 stages)
 
-Every WorkflowRun renders as this fixed 12-stage sequence. Segments, strips, stage lists, and the job-log modal all derive from it.
+Every WorkflowRun renders as this fixed 17-stage sequence. Segments, strips, stage lists, and the job-log modal all derive from it. `stage_state` is a **positional** array — `src/saga/stages.ts` and `frontend/src/lib/types.ts` must list these keys in the same order (pinned by `tests/unit/pipeline.test.ts`).
 
 | # | key | Label | Strip | System caption | Queue (job modal) |
 |---|---|---|---|---|---|
@@ -126,14 +128,21 @@ Every WorkflowRun renders as this fixed 12-stage sequence. Segments, strips, sta
 | 02 | `research` | Research | RES | `Web search + ChatGPT extract` | `content-pipeline` |
 | 03 | `draft` | Generate | GEN | `ChatGPT Business API · 90s` | `content-pipeline` |
 | 04 | `seo` | SEO score | SEO | `Internal scorer` | `content-pipeline` |
-| 05 | `review` | Review | REV | `Human gate` | `human-gate` |
-| 06 | `deploy` | Deploy | DEP | `WordPress REST` | `wordpress` |
-| 07 | `distgen` | Dist. gen | GEN | `OpenAI GPT-4o` | `content-pipeline` |
-| 08 | `distreview` | Dist. review | DRV | `Human gate` | `human-gate` |
-| 09 | `ads` | Ads | ADS | `Meta Marketing API` | `meta-ads · 10 req/10s` |
-| 10 | `email` | Email | EML | `ActiveCampaign` | `activecampaign · 5 req/s` |
-| 11 | `social` | Social | SOC | `LinkedIn · FB · IG` | `social` |
-| 12 | `callback` | Callback | CBK | `Karbon Timeline API` | `karbon` |
+| 05 | `deploy` | WP draft | DFT | `WordPress REST · status=draft` | `wordpress` |
+| 06 | `review` | Review ① | REV | `Human gate · blog post` | `human-gate` |
+| 07 | `golive` | Publish live | PUB | `WordPress REST · status=publish` | `wordpress` |
+| 08 | `socialgen` | Social gen | SGN | `OpenAI GPT-4o · 3 captions` | `content-pipeline` |
+| 09 | `socialreview` | Review ② | SRV | `Human gate · social` | `human-gate` |
+| 10 | `linkedin` | LinkedIn | LI | `LinkedIn UGC Posts API` | `social` |
+| 11 | `facebook` | Facebook | FB | `Meta Graph · page feed` | `social` |
+| 12 | `instagram` | Instagram | IG | `Meta Graph · media publish` | `social` |
+| 13 | `distgen` | Ads/email gen | DGN | `OpenAI GPT-4o` | `content-pipeline` |
+| 14 | `distreview` | Review ③ | DRV | `Human gate · ads + email` | `human-gate` |
+| 15 | `ads` | Ads | ADS | `Meta Marketing API` | `meta-ads · 10 req/10s` |
+| 16 | `email` | Email | EML | `ActiveCampaign` | `activecampaign · 5 req/s` |
+| 17 | `callback` | Callback | CBK | `Karbon Timeline API` | `karbon` |
+
+**Three gates, one batch each.** Each batch is generated only after the gate before it clears, so a run abandoned at gate ② never spends tokens on ad copy. The post reaches WordPress as a *draft* before gate ① — the reviewer previews it in the live theme, and approval is what makes it public.
 
 ### 2.1 Flow rules (must behave exactly like this)
 
@@ -141,12 +150,18 @@ Every WorkflowRun renders as this fixed 12-stage sequence. Segments, strips, sta
 2. **Research** — web search + ChatGPT extract ONE pain point. **Levenshtein guard**: similarity vs. prior research > 0.7 ⇒ duplicate ⇒ re-extract (registry row `duplicate-blocked`, method `Levenshtein research guard`). Unique ⇒ saved. Note: `Web search + ChatGPT pain-point extraction · Levenshtein {n} vs nearest — unique, saved to research registry`.
 3. **Generate** — OpenAI produces 1000+ word post + lead magnet + captions. **Uniqueness Registry check**: all 5 assets (blog, linkedin, facebook, instagram, magnet) are SHA-256 hashed; TF-IDF cosine vs registry `≥ 0.82` ⇒ asset rejected, loop back to **research/generate** and regenerate (registry row `duplicate-blocked`; audit: `Uniqueness Registry: TF-IDF cosine {n} ≥ 0.82 — asset rejected, regenerating (no repeat content permitted)`). Success note: `ChatGPT Business API 200 OK in {n}s — {words}-word post + LinkedIn/FB/IG + lead magnet · registry: SHA-256 + TF-IDF unique`.
 4. **SEO score** — internal scorer (§8.1). If `total < threshold` and auto-SEO loop count < **3**: increment loop, log applied suggestions, regenerate (stage 03 becomes active again with note `Regenerating with {n} SEO fixes (auto-loop {k}): {first suggestion}`). If `total ≥ threshold` (or 3 loops exhausted): pause at **Review** with `status='review'`, stage 05 = `gate`. Audit: `Flagged "Ready for Accountant Revi" — paused for human review (threshold {th}, auto-approve {on|off})`.
-5. **Review (gate 1)** — human actions: Approve / Edit draft / Request revision / Remake / Reject (§8.2). Auto-approve (if enabled and score ≥ threshold) clears this gate ONLY, after a short hold, logged as `Auto-approved — SEO {n} ≥ threshold {th}`.
-6. **Deploy** — WordPress REST. On failure: retries with exponential backoff (`retry` status, note `POST /wp-json/wp/v2/posts → 502 Bad Gateway · retry 1/3 in 2s (exponential backoff)`); success `POST /wp-json/wp/v2/posts → 201 Created · live URL stored`; sets `blogUrl` (`elementaccounting.ca/blog/{slug}`) and `magnetUrl` (`elementaccounting.ca/downloads/{slug3}-checklist.pdf`). 3 failures ⇒ run `failed`, "Workflow Failed" note posted to Karbon timeline, manual **Retry now** button appears (§6).
-7. **Dist. gen** — GPT-4o generates ad + email + 3 captions (brand voice in system prompt), then pauses at **Dist. review** (`status='distreview'`, stage 08 = `gate`). Toast: `{RUN} distribution payloads ready for review`. Audit: `Paused — distribution review gate (human approval required; auto-approve never applies here)`.
-8. **Dist. review (gate 2)** — ALWAYS human. Publish jobs are enqueued only on **Approve & Publish All** (§8.3).
-9. **Ads / Email / Social** — each honors the adapter toggles in Settings: a disabled adapter's stage is `skipped` with note `Skipped — adapter disabled in Settings`; downstream stages still run. Social failures are per-platform and **non-blocking**: expired IG token ⇒ stage `partial`, note `LinkedIn ✓ · Facebook ✓ · Instagram ✕ (token expired) — non-blocking, flagged in Connections`, run still completes.
-10. **Callback** — Karbon Timeline note: `Karbon Timeline API: note posted to {KB-…} — links + completion summary (custom fields untouched)`. Run `complete`; final audit `Workflow complete — all jobs succeeded` (+ ` (1 partial)` when social was partial).
+5. **Review (gate ①)** — reached only after the WP draft exists (stage 05). Human actions: Approve / Edit draft / Request revision / Remake / Reject (§8.2). Approval enqueues **Publish live**, not a fresh deploy. Auto-approve (if enabled and score ≥ threshold) clears this gate ONLY, after a short hold, logged as `Auto-approved — SEO {n} ≥ threshold {th}`.
+6. **WP draft** — WordPress REST with `status=draft`, so the post exists in the real theme but is not publicly reachable. On failure: retries with exponential backoff (`retry` status, note `POST /wp-json/wp/v2/posts → 502 Bad Gateway · retry 1/3 in 2s (exponential backoff)`); success `POST /wp-json/wp/v2/posts (status=draft) → 201 Created · preview ready for review ①`. Stores `cms_post_id`. A revision loop re-runs this stage and **updates the same post** rather than leaving orphan drafts. 3 failures ⇒ run `failed`, "Workflow Failed" note posted to Karbon timeline, manual **Retry now** button appears (§6).
+7. **Review (gate ①)** — human actions as §8.2. Reject is terminal AND trashes the WordPress draft (`DELETE /wp-json/wp/v2/posts/{id}`) so rejected runs don't accumulate drafts, three per trigger.
+8. **Publish live** — flips the approved draft to `status=publish`; sets `blogUrl` (`elementaccounting.ca/blog/{slug}`) and `magnetUrl` (`elementaccounting.ca/downloads/{slug3}-checklist.pdf`). This stage, not gate ①, is where the post becomes public.
+9. **Social gen** — GPT-4o writes the 3 platform captions from the **live** URL, then pauses at **Review ②** (`status='social_review'`, stage 09 = `gate`). Audit: `Paused — social review gate ② (human approval required)`.
+10. **Review (gate ②)** — ALWAYS human. Four actions: **Approve & Post** (fans out to the selected platforms), **Skip** (post nothing, continue to ad/email generation), **Regenerate** (discard the captions, rewrite with an optional note), **Abort** (terminal). Per-platform checkboxes deselect a platform for this run only.
+11. **LinkedIn / Facebook / Instagram** — one stage and one job each, so a failure names the platform and can be retried alone. Failures are **non-blocking**: a dead IG token marks stage 12 `failed` with the verbatim error, the other two still post, and the run still completes. A platform disabled in Settings is `skipped` with note `Skipped — adapter disabled in Settings`.
+12. **Ads/email gen** — GPT-4o writes the ad creative + campaign email, then pauses at **Review ③** (`status='dist_review'`, stage 14 = `gate`). Audit: `Paused — distribution review gate ③ (human approval required; auto-approve never applies here)`.
+13. **Review (gate ③)** — ALWAYS human, same four actions. Publish jobs are enqueued only on **Approve & Publish** (§8.3).
+14. **Callback** — Karbon Timeline note: `Karbon Timeline API: note posted to {KB-…} — links + completion summary (custom fields untouched)`. Run `complete`; final audit `Workflow complete — all jobs succeeded` (+ `(n social platforms failed, non-blocking)` when a platform failed). An **aborted** run still reaches this stage — the work item must not sit in "Ready for Propago" because a human stopped the campaign early.
+
+**Abort semantics.** Gates ② and ③ come after the post is public, so abort cannot retract anything. It marks every remaining stage `skipped`, sets `status='aborted'`, and still posts the Karbon note. It is NOT a failure and posts no "Workflow Failed" note.
 
 **Slug rule** (`slugOf`): lowercase topic, strip non `[a-z0-9 ]`, first 5 words joined with `-`. Magnet/UTM slug = first 3 words of that.
 
@@ -163,7 +178,7 @@ Full-viewport flex row, `height: 100vh; overflow: hidden`.
 - **Nav** (8 items, mono 2-digit index + label):
   `01 Runs · 02 Orchestrator · 03 Review queue · 04 Archive · 05 Lead magnets · 06 Registry · 07 Connections · 08 Settings`
   Item: 9px 10px padding, radius 7. Inactive: label `#A7ABB8` w400, number `#5A5F6E`. Active (also when viewing a Run detail, "Runs" stays active): bg `rgba(255,255,255,.1)`, label `#F4F2ED` w600, number `#2FBF8F`. Hover: bg `rgba(255,255,255,.08)`.
-  **Badges** (violet pill, white mono 10px): on **Review queue** = count of runs in `review` + `distreview`; on **Archive** = count in `review` only. Hidden at 0.
+  **Badges** (violet pill, white mono 10px): on **Review queue** = count of runs in `review` + `socialreview` + `distreview`; on **Archive** = count in `review` only. Hidden at 0.
 - **Sandbox note** (dashed `rgba(255,255,255,.18)` border, radius 8): line 1 mono 9.5px uppercase color `#D9A03F`: `● sandbox mode`; line 2 10.5px `#8B8FA0`: `Meta Ads + Karbon webhook run against sandbox until app review clears.`
 - **Identity row** (bg `rgba(255,255,255,.04)`, radius 7): 24px violet circle with initials; name 11.5px w500 ellipsized; role line 9.5px `#8B8FA0` = `Marketing · {role}`; `log out` ghost button (mono 8.5px uppercase, border `rgba(255,255,255,.22)`, text `#A7ABB8`).
 
@@ -222,7 +237,7 @@ Jude Mercer / JM / jmercer@elementaccounting.ca / admin · Dana Okafor / DO / do
 
 ### 5.1 Stat cards — 4-col grid, gap 12
 
-`Active runs` (value amber; sub `BullMQ · content-pipeline`) · `Awaiting review` (violet; `content + distribution gates`; counts review+distreview) · `Failed / parked` (red when >0 else ink; `manual retry available`) · `Completed` (green; `Karbon notified`). Card: mono uppercase label, Space Grotesk 25px value, 10.5px sub.
+`Active runs` (value amber; sub `BullMQ · content-pipeline`) · `Awaiting review` (violet; `content + social + distribution gates`; counts review+socialreview+distreview) · `Failed / parked` (red when >0 else ink; `manual retry available`) · `Completed` (green; `Karbon notified`). Card: mono uppercase label, Space Grotesk 25px value, 10.5px sub.
 
 ### 5.2 Runs table
 
@@ -230,7 +245,7 @@ One card, horizontal scroll ≥740px. Grid columns exactly: `100px minmax(200px,
 
 Row cells: ① run id (mono 12 w600) over Karbon id (mono 10 `--tx3`); ② topic (13px w500, ellipsis) over client (11px `--tx3`); ③ **pipeline strip** — 12 segments 8×6px radius 2, colored per §1.6, active/retry/gate pulse; ④ status pill (§1.5); ⑤ SEO score mono 12.5 w600 (green if ≥ threshold, amber if below, `—` in `--tx4` if none); ⑥ relative time (`just now`, `{n}m ago`, `{n.n}h ago`); ⑦ `→` in `--tx4`. Row hover bg `var(--bg3)`.
 
-**Sort**: status priority `review(0) → distreview(1) → running(2) → failed(3) → complete(4) → rejected(5)`, then newest `createdAt` first.
+**Sort**: status priority `review(0) → socialreview(1) → distreview(2) → running(3) → failed(4) → complete(5) → rejected(6) → aborted(7)`, then newest `createdAt` first.
 
 **Click a row ⇒ opens the audit-trail modal (§9.1), NOT the detail page.** ("Open full run →" inside the modal navigates to Run detail.)
 
@@ -254,7 +269,7 @@ Row cells: ① run id (mono 12 w600) over Karbon id (mono 10 `--tx3`); ② topic
 
 ## 7. Review queue page (`03 Review queue`)
 
-### 7.1 Empty state (no runs in review/distreview)
+### 7.1 Empty state (no runs in review/socialreview/distreview)
 
 Centered: mono uppercase `queue clear`; Space Grotesk 19 `0 drafts awaiting review`; 12px body: `Runs pause here twice — once for the blog draft after SEO scoring, and again for ad, email and social payloads before anything publishes.`
 
@@ -269,14 +284,14 @@ Label `Awaiting review · {n}`. Horizontal scroll of 242px cards: run id + **gat
 **Tabs**: `Blog post · Meta Ads · Email · Social` (12.5px; active w600 ink + 2px green underline). Ads/Email/Social tabs show a 5px amber dot when that channel payload has unsaved manual edits. Selecting a distribution-gate card defaults to the `Meta Ads` tab; content gate defaults to `Blog post`.
 
 #### Blog post tab
-- Chip `draft` (violet tint) at gate 1 / `approved` (green tint) at gate 2 + `{1,264 words} · {first draft | revision n}` + run id right.
+- Chip `wp draft` (violet tint) at gate ① / `published` (green tint) at gates ② and ③ + `{1,264 words} · {first draft | revision n}` + run id right.
 - Title (Space Grotesk 21 w600), meta description (12.5px, 2px left border `--line4`).
 - Black-on-ink button **`Preview whole blog + lead magnet →`** ⇒ opens preview modal (§9.2).
 - Keyword chips; divider; 2 intro paragraphs (13px/1.7); `Section outline` label; H2 rows (`H2` in green mono + heading, dashed separators); **lead magnet row** (bg `--bg4`): `PDF` tag, magnet name + caption `Lead magnet · generated by ChatGPT Business API · deploys with the post`, `Preview PDF`/`Hide preview` toggle button revealing an inline PDF mock: header `lead-magnet.pdf · by ChatGPT Business API · 38 KB` + URL (`{magnetUrl}` green when live, else `URL assigned at deploy`), white sheet (max 500px) with `Element Accounting · client resource` eyebrow, magnet title, 5 numbered checklist items (`01…05`, dashed rules), footer `+ 7 more items · page 1 of 3`.
 - **Edit mode** (from right-rail `Edit draft`): `Title` input; `Meta description` textarea with live counter `{n}/155` (red past 155); `Save edits` (green) + `Cancel`. Save logs `Draft edited — title + meta description updated`.
 
 #### Meta Ads tab (distribution)
-- Pending (gate 1): dashed placeholder — mono `payloads pending` + `Ad creative is generated right after content approval and WordPress deploy, then pauses here at the distribution gate for your review.`
+- Pending (before its own gate): dashed placeholder — mono `not generated yet` + `{Social captions | Ad creative | Campaign email} is written once {the post goes live | the social batch is approved or skipped}, then pauses here for your review. Nothing is generated ahead of its gate.`
 - Ready: badge `meta ads · sandbox` (amber tint) + caption `LEADGEN objective · queue meta-ads · limiter 10 req/10s`; `Reset to generated` ghost button appears only when edited.
 - Fields with live counters (counter red past limit): **Ad headline** `{n}/40`; **Primary text** `{n}/125` (4-row textarea); **Destination link** (mono input) + helper `ActiveCampaign sign-up form — the ad's lead destination. Counters go red past Meta's recommended limits.`
 - UTM row: `utm enforced at publish` + code chip `?utm_source=meta_ads&utm_medium=paid_social&utm_campaign={slug3}`.
@@ -310,7 +325,7 @@ Footer note (10.5px `--tx3`), by state:
 
 **Editor visual state**: Approve/Publish/bulk-approve buttons render at opacity .45 with `cursor: not-allowed` for editors (still clickable — click shows the role toast; server also enforces 403).
 
-### 7.5 Right rail — Gate 2 (distribution)
+### 7.5 Right rail — Gates ② (social) and ③ (ads + email)
 
 **Distribution gate card**: cyan mono label `Distribution gate`; body `Generated from the approved post. Publish jobs are not enqueued until you approve below.`; 3 channel rows (click switches tab): `Meta Ads` / `ActiveCampaign` / `Organic social`, sub captions `LEADGEN campaign · sandbox · limiter 10 req/10s` / `1,842 subscribers + ad-leads segment · limiter 5 req/s` / `LinkedIn · Facebook · Instagram · non-blocking`; right state `will publish` (green) or `skipped — off` (`--tx4`) per Settings toggles; amber `edited` pill when overridden.
 
@@ -336,7 +351,10 @@ Subscores `kw, read, head, meta` (0–100); `total = round(kw*.3 + read*.3 + hea
 | Request revision | ✓ | ✓ | ✕ (server 403; prototype allows the textarea but confirm-blocks stale runs) | `{RUN} was already approved by {who} — revision not sent` |
 | Remake | ✓ | ✓ | **✓** (any role) | `{RUN} was already handled by {who} — remake not sent` |
 | Reject | ✓ | ✓ | ✕ toast `Editor role can't reject — admin or reviewer required` | `{RUN} was already handled by {who} — nothing overwritten` |
-| Publish All (gate 2) | ✓ | ✓ | ✕ toast `Editor role can't publish — admin or reviewer required` | `{RUN} was already published by {who} — nothing overwritten` |
+| Approve & Post (gate ②) | ✓ | ✓ | ✕ toast `Editor role can't publish — admin or reviewer required` | `{RUN} was already handled by {who} — nothing overwritten` |
+| Approve & Publish (gate ③) | ✓ | ✓ | ✕ toast `Editor role can't publish — admin or reviewer required` | `{RUN} was already published by {who} — nothing overwritten` |
+| Skip / Regenerate (gates ②③) | ✓ | ✓ | ✕ toast `Editor role can't skip — admin or reviewer required` | `{RUN} was already handled by {who} — nothing overwritten` |
+| Abort (gates ②③) | ✓ | ✓ | ✕ toast `Editor role can't abort — admin or reviewer required` | `{RUN} was already handled by {who} — nothing overwritten` |
 
 Conflicts come from the server as **409** (guarded `UPDATE … WHERE status = expected`); the client renders the toast — never a silent overwrite. Success actions: **Approve** ⇒ stage 05 done, deploy starts; **Revision** ⇒ `revisions+1`, stages 03–05 reset, back to generation, audit `Revision requested — "{note}" · looping back to generation`; **Remake** ⇒ `remakes+1`, draft discarded, audit `Remake requested — draft discarded, regenerating article from scratch`; **Reject** ⇒ terminal `rejected`, stage 05 `rejected` with note `Draft rejected at content gate by {who} — run discarded, nothing published`, audit `Draft rejected — run discarded, no content published or distributed`. Rejection posts **no** Karbon failure note.
 

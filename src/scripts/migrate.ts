@@ -19,6 +19,16 @@ async function main(): Promise<void> {
   const sql = readFileSync(join(__dirname, '..', '..', 'db', 'schema.sql'), 'utf8');
   await pool.query(sql);
   console.info('[migrate] schema applied');
+
+  // run_status values introduced by the 17-stage pipeline. These run AFTER
+  // schema.sql (so the type is guaranteed to exist on a fresh database, where
+  // CREATE TYPE already lists them and each ADD VALUE is a no-op) and as
+  // individual statements — a multi-statement query runs in one implicit
+  // transaction, and ALTER TYPE ... ADD VALUE is restricted there.
+  for (const value of ['publishing_live', 'social_generating', 'social_review', 'social_publishing', 'aborted']) {
+    await pool.query(`ALTER TYPE run_status ADD VALUE IF NOT EXISTS '${value}'`);
+  }
+  console.info('[migrate] run_status values ensured');
   // pool.end() can hang against a networked Postgres (idle keep-alive clients),
   // which previously stopped the process from exiting and — when the migration
   // was chained to the server start — kept the server from ever binding. Cap it
