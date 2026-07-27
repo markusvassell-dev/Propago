@@ -24,13 +24,20 @@ const STATUS: Record<Conn['status'], { label: string; c: string; bg: string }> =
   attention: { label: 'Action needed', c: 'var(--red)', bg: 'rgba(179,38,30,.09)' }
 };
 
+interface ConfigIssue { key: string; severity: 'error' | 'warn' | 'ok'; problem: string; fix: string; }
+interface CredExpiry { id: string; label: string; daysLeft: number | null; severity: 'error' | 'warn' | 'ok'; note: string; }
+interface ConfigHealth { issues: ConfigIssue[]; expiry: CredExpiry[]; errors: number; warnings: number; }
+
 export default function Connections() {
   const [conns, setConns] = useState<Conn[]>([]);
+  const [cfg, setCfg] = useState<ConfigHealth | null>(null);
   const [testMsg, setTestMsg] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const r = await api.get<{ connections: Conn[] }>('/api/connections');
     setConns(r.connections);
+    // Admin-only; non-admins simply don't see the panel.
+    setCfg(await api.get<ConfigHealth>('/api/config-health').catch(() => null));
   }, []);
 
   useEffect(() => {
@@ -49,8 +56,39 @@ export default function Connections() {
     window.setTimeout(() => setTestMsg((m) => ({ ...m, [id]: '' })), 8000);
   };
 
+  const sevColor = (s: string) => (s === 'error' ? 'var(--red)' : s === 'warn' ? 'var(--amb)' : 'var(--grn)');
+
   return (
     <div>
+      {/* Config & credential health — catches the failure modes that produce
+          confusing outages (empty vars, corrupted secrets, expiring tokens). */}
+      {cfg && (cfg.errors > 0 || cfg.warnings > 0) && (
+        <div
+          className="card"
+          style={{ padding: '14px 17px', marginBottom: 12, borderLeft: `3px solid ${cfg.errors > 0 ? 'var(--red)' : 'var(--amb)'}` }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 700, color: cfg.errors > 0 ? 'var(--red)' : 'var(--amb)' }}>
+            {cfg.errors > 0 ? `⚠ ${cfg.errors} configuration error${cfg.errors > 1 ? 's' : ''}` : `${cfg.warnings} configuration warning${cfg.warnings > 1 ? 's' : ''}`}
+            {cfg.errors > 0 && cfg.warnings > 0 ? ` · ${cfg.warnings} warning${cfg.warnings > 1 ? 's' : ''}` : ''}
+          </div>
+          {cfg.issues.map((i) => (
+            <div key={i.key} style={{ marginTop: 9 }}>
+              <div className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: sevColor(i.severity) }}>{i.key}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--tx2)', lineHeight: 1.5, marginTop: 2 }}>{i.problem}</div>
+              <div style={{ fontSize: 11, color: 'var(--tx3)', lineHeight: 1.5, marginTop: 2 }}>Fix: {i.fix}</div>
+            </div>
+          ))}
+          {cfg.expiry.filter((e) => e.severity !== 'ok').map((e) => (
+            <div key={e.id} style={{ marginTop: 9 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 600, color: sevColor(e.severity) }}>
+                {e.label}{e.daysLeft !== null ? ` — ${e.daysLeft <= 0 ? 'EXPIRED' : `${e.daysLeft} day(s) left`}` : ''}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--tx3)', lineHeight: 1.5, marginTop: 2 }}>{e.note}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))', gap: 12 }}>
         {conns.map((c) => {
           const s = STATUS[c.status];

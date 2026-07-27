@@ -22,6 +22,7 @@ import { registryStats } from '../services/registryService';
 import { fireSimulatedTrigger } from '../services/triggerService';
 import { processWorkEvent } from '../services/karbonWork';
 import { channelHealth, liveTest } from '../services/connectionHealth';
+import { configHealth } from '../services/configHealth';
 import { generateForIndustry, toPresetTopics } from '../services/industryGenerator';
 import { getSetting, Preset } from '../services/presets';
 import { configureScheduler, schedulerNextRun, QUEUE, enqueue } from '../queues/queues';
@@ -545,6 +546,17 @@ apiRouter.get(
         };
       })
     });
+  })
+);
+
+// Config & credential health — the checks that would have caught an empty
+// DATABASE_URL, a "•"-corrupted KARBON_ACCESS_KEY and WORDPRESS_USERNAME=filler,
+// plus advance warning before a token silently expires.
+apiRouter.get(
+  '/config-health',
+  requireRole('admin'),
+  wrap(async (_req, res) => {
+    res.json(configHealth());
   })
 );
 

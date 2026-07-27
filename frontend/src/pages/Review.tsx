@@ -6,6 +6,7 @@ import { Run, AdsPayload, EmailPayload, SocialPayload } from '../lib/types';
 import { MicroLabel, KeywordChip, ScoreBar } from '../components/ui';
 import PdfSheet from '../components/PdfSheet';
 import PreviewModal from '../components/PreviewModal';
+import { FacebookPreview, LinkedInPreview, InstagramPreview, MetaAdPreview, EmailPreview } from '../components/ChannelPreviews';
 import { fmtAgo, slug3Of } from '../lib/format';
 
 // Review queue (DESIGN_SPEC §7) — both human gates in one page.
@@ -406,6 +407,12 @@ export default function Review() {
                     ActiveCampaign sign-up form — the ad's lead destination. Counters go red past Meta's recommended limits.
                   </div>
                   <div style={{ marginTop: 12 }}>{utmChip(`?utm_source=meta_ads&utm_medium=paid_social&utm_campaign=${slug3Of(sel.topic)}`)}</div>
+                  <div style={{ marginTop: 16, maxWidth: 380 }}>
+                    <MicroLabel>Preview — updates as you edit</MicroLabel>
+                    <div style={{ marginTop: 7 }}>
+                      <MetaAdPreview headline={ads.headline} primaryText={ads.primary} url={ads.link} />
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}
@@ -434,6 +441,12 @@ export default function Review() {
                     The first_name token is an ActiveCampaign merge tag — resolved per contact at send.
                   </div>
                   <div style={{ marginTop: 12 }}>{utmChip(`?utm_source=activecampaign&utm_medium=email&utm_campaign=${slug3Of(sel.topic)}`)}</div>
+                  <div style={{ marginTop: 16, maxWidth: 400 }}>
+                    <MicroLabel>Preview — the branded template subscribers receive</MicroLabel>
+                    <div style={{ marginTop: 7 }}>
+                      <EmailPreview subject={email.subject} body={email.body} title={sel.draft?.title ?? sel.topic} />
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}
@@ -471,6 +484,11 @@ export default function Review() {
                     {p.k === 'instagram' && (
                       <div style={{ fontSize: 10.5, color: 'var(--tx3)', marginTop: 5 }}>Captions can't carry links — the CTA reads "link in bio".</div>
                     )}
+                    <div style={{ marginTop: 10, maxWidth: 360 }}>
+                      {p.k === 'linkedin' && <LinkedInPreview caption={social.linkedin} title={sel.draft?.title ?? sel.topic} url={sel.draft?.liveUrl ?? ''} />}
+                      {p.k === 'facebook' && <FacebookPreview caption={social.facebook} title={sel.draft?.title ?? sel.topic} url={sel.draft?.liveUrl ?? ''} />}
+                      {p.k === 'instagram' && <InstagramPreview caption={social.instagram} title={sel.draft?.title ?? sel.topic} />}
+                    </div>
                   </div>
                 ))}
                 <div style={{ marginTop: 12 }}>{utmChip(`?utm_source={platform}&utm_medium=organic_social&utm_campaign=${slug3Of(sel.topic)}`)}</div>
@@ -507,6 +525,30 @@ export default function Review() {
                         )}
                       </div>
                     )}
+                    {/* Weighted drag: the bars show raw component scores, but
+                        the score is weighted (kw 30 · read 30 · head 20 · meta
+                        20). Name the component actually costing the most points
+                        so the fix is obvious without doing the arithmetic. */}
+                    {(() => {
+                      const parts = [
+                        { label: 'Keyword density', value: seo.kw, weight: 0.3 },
+                        { label: 'Readability', value: seo.read, weight: 0.3 },
+                        { label: 'Heading structure', value: seo.head, weight: 0.2 },
+                        { label: 'Meta tags', value: seo.meta, weight: 0.2 }
+                      ].map((p) => ({ ...p, lost: Math.round((100 - p.value) * p.weight) }));
+                      const worst = parts.reduce((a, b) => (b.lost > a.lost ? b : a));
+                      if (worst.lost < 3) return null;
+                      return (
+                        <div style={{ background: 'rgba(180,83,9,.08)', borderRadius: 7, padding: '8px 10px', marginTop: 10, fontSize: 10.5, lineHeight: 1.55, color: 'var(--tx1)' }}>
+                          <strong style={{ color: 'var(--amb)' }}>Biggest drag: {worst.label}</strong> — {worst.value}/100 at {Math.round(worst.weight * 100)}% weight is costing about {worst.lost} point{worst.lost === 1 ? '' : 's'}.
+                          {worst.label === 'Keyword density' && seo.kw === 50 && (
+                            <div style={{ marginTop: 4, color: 'var(--tx2)' }}>
+                              A flat 50 usually means no target keywords were supplied for this run — the scorer can’t grade density without a primary keyword.
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                     <ScoreBar label="Keyword density" value={seo.kw} />
                     <ScoreBar label="Readability" value={seo.read} />
                     <ScoreBar label="Heading structure" value={seo.head} />

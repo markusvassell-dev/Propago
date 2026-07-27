@@ -5,6 +5,7 @@ import { pool } from './db/pool';
 import { redis, closeRedis } from './redis/connection';
 import { closeQueues, configureScheduler } from './queues/queues';
 import { getSetting } from './services/presets';
+import { logConfigHealthAtBoot } from './services/configHealth';
 
 // Single-service topology: HTTP API + BullMQ workers in one process. This is
 // the simplest Railway deployment; to scale, run `node dist/index.js --worker`
@@ -32,6 +33,10 @@ const timed = <T>(p: Promise<T>, ms: number): Promise<T> =>
  * also show a dependency that comes up late.
  */
 function bootDiagnostics(): void {
+  // Config sanity BEFORE dialing anything: an empty/corrupted variable is a far
+  // more common cause of a broken deploy than an unreachable dependency, and it
+  // is invisible unless something says so.
+  logConfigHealthAtBoot();
   const probe = async (attempt: number): Promise<void> => {
     let pgOk = false;
     let redisOk = false;
