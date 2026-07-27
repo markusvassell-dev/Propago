@@ -97,6 +97,16 @@ export const env = {
     /set-me|change-?me|placeholder|xxxx/i.test(process.env.OPENAI_API_KEY ?? '') ||
     (process.env.OPENAI_API_KEY ?? '').length < 24,
 
+  // Content locale. The generator prompt was hardcoded to a UK firm / UK
+  // English, which is wrong for a Calgary practice and hurts topical relevance
+  // (UK tax terms, UK spellings). Both are configurable.
+  content: {
+    firmDescription:
+      process.env.CONTENT_FIRM_DESCRIPTION ??
+      'a Canadian accounting and advisory firm serving small and medium businesses',
+    englishVariant: process.env.CONTENT_ENGLISH_VARIANT ?? 'Canadian English'
+  },
+
   wordpress: {
     baseUrl: process.env.WORDPRESS_BASE_URL ?? '',
     username: process.env.WORDPRESS_USERNAME ?? '',

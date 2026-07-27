@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { KarbonTrigger } from '../adapters/types';
 import { createRunFromTrigger, ConflictError } from '../saga/orchestrator';
 import { getWorkItem, setWorkItemStatus, postTimelineNote } from './karbonClient';
+import { deriveKeywords } from '../utils/keywords';
 
 // Native Karbon Work-webhook processing (WebhookType="Work").
 //
@@ -79,12 +80,18 @@ export function buildTrigger(
 ): KarbonTrigger {
   const title = str(wi.Title ?? wi.WorkTitle ?? payload.Title).trim() || `Karbon work item ${permaKey}`;
   const client = str(wi.ClientName ?? wi.RelationshipName ?? wi.PrimaryContactName ?? payload.ClientName).trim();
+  // Karbon's webhook carries no keywords, but the SEO scorer weights keyword
+  // density at 30% and cannot score at all without a primary keyword — an empty
+  // array silently caps the run at ~50/100. Derive them from the work-item
+  // title (the research step can still refine them with web-grounded terms).
+  const workType = str(wi.WorkType ?? wi.ServiceType).trim();
+  const keywords = deriveKeywords(title, [workType].filter(Boolean));
   return {
     workItemId: permaKey,
     stageId: activationStatus, // batch is keyed by work item + activation status
     clientName: client,
     topic: title,
-    keywords: [],
+    keywords,
     tone: 'Authoritative, plainspoken'
   };
 }

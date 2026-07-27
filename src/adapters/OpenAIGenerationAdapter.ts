@@ -120,15 +120,32 @@ export class OpenAIGenerationAdapter implements ContentGenerationProvider {
 
   private systemPrompt(brandVoice: string): string {
     return [
-      'You are the senior content writer for a UK financial advisory firm serving under-served niches (health & safety consultancies and similar SME sectors).',
+      `You are the senior content writer for ${env.content.firmDescription}.`,
       brandVoice ? `BRAND VOICE — follow it exactly in all copy:\n${brandVoice}` : '',
-      'Business-focused, practical, zero fluff. UK English. No exclamation marks. No emoji.',
+      `Business-focused, practical, zero fluff. ${env.content.englishVariant}. No exclamation marks. No emoji.`,
+      '',
+      // The internal scorer weights keyword density 30%, readability 30%,
+      // heading structure 20%, meta tags 20%. State those rules explicitly —
+      // the model was previously graded on a rubric it was never shown.
+      'SEO REQUIREMENTS — the post is scored against these automatically, so satisfy every one:',
+      '  · Use the PRIMARY keyword (the first target keyword) in the blogTitle, in the metaDescription, within the FIRST 100 WORDS of the post, and in at least one H2 heading.',
+      '  · Keep primary-keyword density between 1.0% and 1.5% of total words — enough to register, never stuffed. Use natural variations elsewhere.',
+      '  · Use the SECOND keyword in at least one H2 heading.',
+      '  · Structure the post with AT LEAST 3 H2 headings (##) plus some H3 (###) subheadings.',
+      '  · blogTitle must be ≤ 60 characters (it truncates in search results beyond that).',
+      '  · metaDescription must be between 120 and 155 characters — use the full width.',
+      '',
+      'READABILITY — the scorer measures reading ease, and dense professional prose scores badly:',
+      '  · Average sentence length under 20 words; never exceed 28 words in a sentence.',
+      '  · Prefer short, common words over long formal ones (use "use" not "utilise", "help" not "facilitate").',
+      '  · Define any technical or tax term in plain language the first time it appears.',
+      '  · Write for a busy owner-operator, around a grade 8–9 reading level, without dumbing down the substance.',
       '',
       'Return STRICT JSON with exactly these keys:',
       '{',
-      '  "blogTitle": string,                       // compelling, ≤ 70 chars',
-      '  "metaDescription": string,                 // ≤ 155 chars',
-      `  "blogMarkdown": string,                    // the FULL post in Markdown, MINIMUM ${MIN_WORDS + 200} words, H2/H3 headings, keywords woven in naturally, ends with a short CTA to download the lead magnet`,
+      '  "blogTitle": string,                       // compelling, ≤ 60 chars, contains the primary keyword',
+      '  "metaDescription": string,                 // 120–155 chars, contains the primary keyword',
+      `  "blogMarkdown": string,                    // the FULL post in Markdown, MINIMUM ${MIN_WORDS + 200} words, 3+ H2 headings, keywords woven in naturally, ends with a short CTA to download the lead magnet`,
       '  "leadMagnet": {',
       '    "name": string,                          // e.g. "The H&S Consultancy Cash-Flow Checklist" — ends with a format word like Checklist/Guide/Toolkit',
       '    "subtitle": string,                      // one line',
@@ -142,10 +159,13 @@ export class OpenAIGenerationAdapter implements ContentGenerationProvider {
   }
 
   private userPrompt(req: GenerationRequest): string {
-    const kw = req.keywords.join(', ');
+    const [primary, ...rest] = req.keywords.filter(Boolean);
     return [
       `Topic: ${req.topic}`,
-      kw ? `Target keywords: ${kw}` : '',
+      // Name the primary explicitly — the scorer checks THIS phrase in the
+      // title, meta description, first 100 words and headings.
+      primary ? `PRIMARY keyword (must appear in title, meta description, first 100 words, and an H2): "${primary}"` : '',
+      rest.length ? `Secondary keywords (use "${rest[0]}" in at least one H2): ${rest.join(', ')}` : '',
       req.tone ? `Tone: ${req.tone}` : '',
       req.variant
         ? `This is content set ${req.variant.seq} of ${req.variant.of} generated from one trigger — take a distinct angle from the other sets (different hook, structure and lead-magnet focus).`
