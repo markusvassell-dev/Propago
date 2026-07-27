@@ -196,11 +196,26 @@ export async function liveTest(id: string): Promise<string> {
       return `authenticated${u?.email ? ` as ${u.email}` : ''} · list ${env.activeCampaign.listId}`;
     }
     case 'li': {
-      await axios.get('https://api.linkedin.com/v2/me', {
-        headers: { Authorization: `Bearer ${env.social.linkedinToken}` },
-        timeout: TIMEOUT
-      });
-      return `token valid · posting as ${env.social.linkedinOrgUrn}`;
+      // Use /v2/userinfo (OpenID), NOT /v2/me — the latter needs the legacy
+      // r_liteprofile scope, so a perfectly good token provisioned with
+      // openid/profile/w_member_social would 403 and look broken.
+      const headers = { Authorization: `Bearer ${env.social.linkedinToken}` };
+      const urn = env.social.linkedinOrgUrn;
+      const target = urn.includes(':organization:') ? 'company page' : 'personal profile';
+      try {
+        const r = await axios.get('https://api.linkedin.com/v2/userinfo', { headers, timeout: TIMEOUT });
+        const name = (r.data as { name?: string }).name;
+        return `token valid${name ? ` (${name})` : ''} · posts to the ${target} ${urn}`;
+      } catch (err) {
+        // Organization tokens don't carry openid; fall back to the legacy probe
+        // so company-page setups still verify.
+        const status = (err as { response?: { status?: number } }).response?.status;
+        if (status === 403 || status === 401) {
+          await axios.get('https://api.linkedin.com/v2/me', { headers, timeout: TIMEOUT });
+          return `token valid · posts to the ${target} ${urn}`;
+        }
+        throw err;
+      }
     }
     case 'fb': {
       const r = await axios.get(
