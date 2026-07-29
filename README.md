@@ -1,3 +1,4 @@
+[README (1).md](https://github.com/user-attachments/files/30516901/README.1.md)
 # Propago — Production Code Handoff Bundle
 
 Full-stack marketing automation hub for a financial advisory firm (Element Accounting) targeting under-served niches — health & safety sector first. Karbon work management triggers an end-to-end pipeline: external AI content generation → SEO scoring → human review gate → WordPress deploy → distribution copy generation → **second** human review gate → Meta Ads + ActiveCampaign + organic social publishing → Karbon timeline callback.
@@ -228,7 +229,7 @@ Settings (`adapters_enabled`) — disabled channels are skipped cleanly, never s
 
 | Channel | Env vars | Where to get them |
 | --- | --- | --- |
-| WordPress | `WORDPRESS_BASE_URL`, `WORDPRESS_USERNAME`, `WORDPRESS_APP_PASSWORD` | WP Admin → Users → Profile → **Application Passwords** (needs a user with `publish_posts`). Test verifies auth via `GET /wp-json/wp/v2/users/me`. |
+| WordPress | `WORDPRESS_BASE_URL`, `WORDPRESS_USERNAME`, `WORDPRESS_APP_PASSWORD`, `WORDPRESS_CATEGORY` | WP Admin → Users → Profile → **Application Passwords** (needs a user with `publish_posts`). Test verifies auth via `GET /wp-json/wp/v2/users/me`. The lead-magnet link is rendered as a styled CTA block in the post body — it is the only route to the PDF an organic search visitor has, since ads and email only reach people already in the funnel. The run's keywords are assigned as real WP **tags** so the theme renders its own tag row and share buttons under the post — that ending is theme output driven by the taxonomy, not markup we can put in the body. `WORDPRESS_CATEGORY` (optional) sets the category feeding the theme's "In {Category} · {Date} · {N} Minutes" hero line and the permalink; blank uses the WP default. |
 | Meta Ads | `META_ACCESS_TOKEN`, `META_AD_ACCOUNT_ID`, `META_PAGE_ID`, then `META_SANDBOX_MODE=false` | Meta developer app with `ads_management`. **Sandbox stays on (default) until your app passes Meta review** — sandbox logs payloads and returns synthetic IDs, zero spend. Flip `META_SANDBOX_MODE=false` only after review clears. |
 | ActiveCampaign | `AC_API_URL`, `AC_API_KEY`, `AC_LIST_ID` (default `1`) | AC → Settings → Developer. `AC_API_URL` is your `https://<account>.api-us1.com` base. Confirm `AC_LIST_ID` is the list that should receive lead-magnet contacts. |
 | LinkedIn | `LINKEDIN_ACCESS_TOKEN`, `LINKEDIN_ORG_URN` | OAuth token with `w_organization_social` for the company page; URN looks like `urn:li:organization:12345`. |
