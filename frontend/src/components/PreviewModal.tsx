@@ -147,6 +147,48 @@ export default function PreviewModal({ run, onClose }: { run: Run; onClose: () =
                       ))}
                     </div>
                   ))}
+                  {/* Lead-magnet CTA â the in-post route to the PDF, and the
+                      only one an organic search visitor has. Mirrors
+                      magnetCta() in WordPressAdapter exactly. */}
+                  <div style={{ background: '#F4F1EC', borderLeft: '4px solid #597363', padding: '20px 24px', margin: '32px 0 0' }}>
+                    <div style={{ ...A, margin: '0 0 6px', fontWeight: 700, fontSize: 11, letterSpacing: '.06em', color: '#3C4C3C' }}>
+                      FREE DOWNLOAD
+                    </div>
+                    <div style={{ ...A, margin: '0 0 14px', fontSize: 12.5, lineHeight: 1.7, color: '#3F3A3B' }}>
+                      {run.draft?.magnet ?? 'The checklist'} — the checklist our advisory team works through with clients.
+                    </div>
+                    <span style={{ ...A, display: 'inline-block', background: '#BC7C54', color: '#fff', fontSize: 9.5, fontWeight: 700, letterSpacing: '.05em', padding: '9px 16px' }}>
+                      GET THE CHECKLIST (PDF)
+                    </span>
+                  </div>
+
+                  {/* Tag row + share icons â the theme renders these from the
+                      post's assigned tags, so they appear on every hand-written
+                      post and now on generated ones too. */}
+                  <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', justifyContent: 'center', margin: '34px 0 0' }}>
+                    {(run.keywords ?? []).map((k) => (
+                      <span
+                        key={k}
+                        style={{
+                          ...A,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: '.09em',
+                          textTransform: 'uppercase',
+                          color: '#6B6560',
+                          background: '#D8D2CC',
+                          padding: '5px 10px'
+                        }}
+                      >
+                        {k}
+                      </span>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: 13, justifyContent: 'center', margin: '14px 0 4px', color: '#6B6560', fontSize: 12 }}>
+                    {['f', '✕', 'p', 'in', '✉'].map((g, i) => (
+                      <span key={i} style={{ ...A, fontWeight: 700 }}>{g}</span>
+                    ))}
+                  </div>
                 </div>
                 {/* footer CTA band */}
                 <div style={{ background: '#3C4C3C', padding: '30px 48px' }}>
