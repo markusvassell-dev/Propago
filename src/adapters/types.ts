@@ -78,6 +78,12 @@ export interface CmsPublisher {
     leadMagnetUrl: string;
     existingPostId?: string; // update-in-place on revision redeploys
     topicSlugSource?: string; // spec §2 slug rule — slug comes from the topic
+    // Assigned as real WordPress terms so the THEME renders its own tag row and
+    // share buttons under the post, exactly as on hand-written posts. Faking
+    // that markup in the post body would style wrong and produce dead links.
+    tags?: string[];
+    category?: string;
+    leadMagnetName?: string;
   }): Promise<CmsPublishResult>;
   /** Flips an existing draft to status=publish. Called on gate ① approval. */
   publishLive(postId: string): Promise<{ liveUrl: string }>;
