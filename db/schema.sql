@@ -319,6 +319,45 @@ INSERT INTO app_settings (key, value) VALUES
   ]')
 ON CONFLICT (key) DO NOTHING;
 
+-- ---------- Calgary owner-operator preset pack (idempotent MERGE) ----------
+-- The INSERT above only seeds a fresh database (ON CONFLICT DO NOTHING), so it
+-- can never add presets to an existing deploy. This statement appends any
+-- preset whose key is not already present, leaving every existing preset — and
+-- any edits, archive flags or generated topic pools on them — untouched.
+-- Re-running is a no-op once the keys exist.
+--
+-- Age bands are deliberate: 50-70 targets the succession/exit stage (Alberta's
+-- last boomers reach 65 by 2030 and only ~1 in 10 owners has a formal plan),
+-- 45-65 the peak-earning stage, 40-70 the trades where owner age spreads wide.
+WITH incoming AS (
+  SELECT p FROM jsonb_array_elements('[
+    {"key":"salon","label":"Salon & barbershop (YYC)","niche":"Calgary salons, barbershops and independent beauty studios","audience":"Salon and barbershop owners, aged 35-60","region":"Calgary, AB"},
+
+    {"key":"hvac","label":"HVAC contractors (YYC)","niche":"Calgary HVAC, furnace and sheet-metal service contractors","audience":"Owner-operators of HVAC firms, aged 50-70, many approaching succession or sale","region":"Calgary, AB"},
+    {"key":"gencon","label":"General contracting (YYC)","niche":"Calgary general contracting and residential renovation firms","audience":"General contractors and renovation firm owners, aged 50-70, planning succession or exit","region":"Calgary, AB"},
+    {"key":"funeral","label":"Funeral homes (YYC)","niche":"Independent Calgary funeral homes and memorial service providers","audience":"Family funeral-home owners, aged 50-70, facing generational transfer","region":"Calgary, AB"},
+
+    {"key":"plumb","label":"Plumbing & heating (YYC)","niche":"Calgary plumbing and heating companies","audience":"Owner-operators of plumbing and heating firms, aged 45-65","region":"Calgary, AB"},
+    {"key":"elec","label":"Electrical contracting (YYC)","niche":"Calgary electrical contracting businesses","audience":"Electrical contractor owners, aged 45-65","region":"Calgary, AB"},
+    {"key":"dental","label":"Dental practices (YYC)","niche":"Independent Calgary dental and orthodontic practices","audience":"Practice-owner dentists, aged 45-65","region":"Calgary, AB"},
+
+    {"key":"landscape","label":"Landscaping & snow removal (YYC)","niche":"Calgary landscaping, lawn care and snow-removal businesses","audience":"Landscaping and snow-removal owners, aged 40-70, running highly seasonal revenue","region":"Calgary, AB"},
+    {"key":"autorepair","label":"Auto repair shops (YYC)","niche":"Independent Calgary auto repair and mechanical shops","audience":"Independent auto-shop owners, aged 40-70","region":"Calgary, AB"},
+    {"key":"vet","label":"Veterinary clinics (YYC)","niche":"Independent Calgary veterinary clinics","audience":"Practice-owner veterinarians, aged 40-70, under consolidation pressure from corporate buyers","region":"Calgary, AB"}
+  ]'::jsonb) AS p
+),
+existing AS (
+  SELECT value AS v FROM app_settings WHERE key = 'presets'
+)
+UPDATE app_settings s
+   SET value = (SELECT v FROM existing) || COALESCE((
+         SELECT jsonb_agg(p)
+           FROM incoming, existing
+          WHERE NOT (v @> jsonb_build_array(jsonb_build_object('key', p->>'key')))
+       ), '[]'::jsonb),
+       updated_at = now()
+ WHERE s.key = 'presets';
+
 -- ---------- password_reset_tokens (self-service set / reset password) ----------
 -- Invited users and password resets flow through here. We store ONLY a SHA-256
 -- hash of the single-use token (never the raw token, never a password). The raw

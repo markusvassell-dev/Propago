@@ -711,6 +711,105 @@ const SETTING_KEYS = [
   'master_prompt'
 ];
 
+// ---- Preset archive / delete (Orchestrator) ----
+// Archive hides a preset from the picker but keeps it in the database, so runs
+// that already used it still resolve their origin. Delete is permanent and is
+// therefore refused for the two built-ins — removing those would orphan
+// existing run history with no way back.
+
+async function writePresets(next: Preset[], userId: string): Promise<void> {
+  await query(
+    `INSERT INTO app_settings (key, value, updated_by) VALUES ('presets', $1::jsonb, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [JSON.stringify(next), userId]
+  );
+}
+
+/** If the archived/deleted preset was the active one, move to a visible preset
+ *  so the auto-runner is never left pointing at something hidden. */
+async function reseatActivePreset(next: Preset[], removedKey: string, userId: string): Promise<string | null> {
+  const active = await getSetting<string>('active_preset', 'hs');
+  if (active !== removedKey) return null;
+  const replacement = next.find((p) => !p.archived);
+  if (!replacement) return null;
+  await query(
+    `INSERT INTO app_settings (key, value, updated_by) VALUES ('active_preset', $1::jsonb, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [JSON.stringify(replacement.key), userId]
+  );
+  return replacement.key;
+}
+
+apiRouter.post(
+  '/presets/:key/archive',
+  requireRole('admin'),
+  wrap(async (req, res) => {
+    const { key } = req.params;
+    const presets = await getSetting<Preset[]>('presets', []);
+    const target = presets.find((p) => p.key === key);
+    if (!target) {
+      res.status(404).json({ error: 'not_found', message: 'No preset with that key.' });
+      return;
+    }
+    if (presets.filter((p) => !p.archived).length <= 1 && !target.archived) {
+      res.status(422).json({ error: 'last_preset', message: 'At least one preset must stay active.' });
+      return;
+    }
+    const next = presets.map((p) => (p.key === key ? { ...p, archived: true, archivedAt: new Date().toISOString() } : p));
+    await writePresets(next, req.user!.id);
+    const reseated = await reseatActivePreset(next, key, req.user!.id);
+    await auditMsg(null, req.user!.handle, `Pain-point preset “${target.label}” archived`, 'preset.archived', req.user!.id);
+    res.json({ ok: true, activePreset: reseated });
+  })
+);
+
+apiRouter.post(
+  '/presets/:key/unarchive',
+  requireRole('admin'),
+  wrap(async (req, res) => {
+    const { key } = req.params;
+    const presets = await getSetting<Preset[]>('presets', []);
+    if (!presets.some((p) => p.key === key)) {
+      res.status(404).json({ error: 'not_found', message: 'No preset with that key.' });
+      return;
+    }
+    const next = presets.map((p) => (p.key === key ? { ...p, archived: false, archivedAt: undefined } : p));
+    await writePresets(next, req.user!.id);
+    await auditMsg(null, req.user!.handle, `Pain-point preset “${key}” restored`, 'preset.unarchived', req.user!.id);
+    res.json({ ok: true });
+  })
+);
+
+apiRouter.delete(
+  '/presets/:key',
+  requireRole('admin'),
+  wrap(async (req, res) => {
+    const { key } = req.params;
+    const presets = await getSetting<Preset[]>('presets', []);
+    const target = presets.find((p) => p.key === key);
+    if (!target) {
+      res.status(404).json({ error: 'not_found', message: 'No preset with that key.' });
+      return;
+    }
+    if (target.builtin) {
+      res.status(422).json({
+        error: 'builtin_locked',
+        message: 'Built-in presets cannot be deleted — archive it instead to hide it from the picker.'
+      });
+      return;
+    }
+    const next = presets.filter((p) => p.key !== key);
+    if (!next.some((p) => !p.archived)) {
+      res.status(422).json({ error: 'last_preset', message: 'At least one preset must stay active.' });
+      return;
+    }
+    await writePresets(next, req.user!.id);
+    const reseated = await reseatActivePreset(next, key, req.user!.id);
+    await auditMsg(null, req.user!.handle, `Pain-point preset “${target.label}” deleted`, 'preset.deleted', req.user!.id);
+    res.json({ ok: true, activePreset: reseated });
+  })
+);
+
 // ---- Target Industry (Orchestrator): generate → review → save as preset ----
 // Generate NEVER persists: it returns a tailored master research prompt plus
 // candidate pain points for the admin to review, edit and then save.

@@ -1,3 +1,4 @@
+import { env } from '../config/env';
 // Internal SEO scorer — pure function, no external calls.
 // Weighted: keyword density 30% · readability 30% · heading structure 20% · meta tags 20%.
 
@@ -57,8 +58,10 @@ export function scoreSeo(input: {
   const longSentences = sentences.filter((s) => s.split(/\s+/).length > 28).length;
   if (longSentences > 2)
     suggestions.push(`Readability: ${longSentences} sentences exceed 28 words — split them.`);
-  if (wordCount < 1000)
-    suggestions.push(`Post is ${wordCount} words — the generator contract requires 1000+.`);
+  if (wordCount < env.blogWords.target)
+    suggestions.push(
+      `Post is ${wordCount} words — under the ${env.blogWords.target}-word target. Longer posts score better on depth; consider Request revision.`
+    );
 
   // ---- Heading structure ----
   const h2s = (blogText.match(/^##\s+.+$/gm) ?? []).length;

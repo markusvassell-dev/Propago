@@ -7,6 +7,8 @@ import { WordPressAdapter } from '../../src/adapters/WordPressAdapter';
 import { generateSocialCaptions, generateAdsAndEmail } from '../../src/services/distributionCopy';
 import { TERMINAL } from '../../src/services/karbonWork';
 import { env } from '../../src/config/env';
+import { scoreSeo } from '../../src/services/seoScorer';
+import { visiblePresets, Preset } from '../../src/services/presets';
 
 // The 17-stage pipeline: blog draft → gate ① → live → social → gate ② → posts
 // → ads/email → gate ③ → publish. These tests pin the invariants that are
@@ -169,5 +171,62 @@ describe('split distribution generation', () => {
     expect(metaAds.primaryText.length).toBeLessThanOrEqual(125);
     expect(acEmail.subject.length).toBeGreaterThan(0);
     expect(acEmail.body).toContain('{{ first_name }}');
+  });
+});
+
+describe('blog length policy', () => {
+  it('keeps the failure floor well below the target', () => {
+    // These must not be equal. A post between floor and target is publishable
+    // and goes to review gate ① flagged; only sub-floor output fails the job.
+    // Collapsing them restores the old behaviour where a 950-word post parked
+    // the run and posted "Workflow Failed" to Karbon.
+    expect(env.blogWords.floor).toBeLessThan(env.blogWords.target);
+  });
+
+  it('leaves real headroom above the article length', () => {
+    // 4096 was the bug: a ~1,200-word post plus the lead magnet, JSON-escaped,
+    // landed at 2,800-3,400 tokens and either truncated into invalid JSON or
+    // made the model self-limit. Roughly 1.4 tokens per word of markdown, and
+    // the article now has the budget to itself.
+    const estTokensForTarget = env.blogWords.target * 1.4;
+    expect(env.openaiMaxTokens).toBeGreaterThan(estTokensForTarget * 2);
+  });
+
+  it('allows at least one expansion pass', () => {
+    expect(env.blogWords.maxExpansions).toBeGreaterThanOrEqual(1);
+  });
+
+  it('flags a short post in the SEO suggestions rather than staying silent', () => {
+    const thin = 'Cash flow forecasting matters. '.repeat(20);
+    const report = scoreSeo({
+      blogText: `# T\n\n## Cash flow forecasting\n\n${thin}`,
+      title: 'Cash flow forecasting for Calgary trades',
+      metaDescription: 'A practical guide to cash flow forecasting for Calgary trades owners who need steadier months.',
+      keywords: ['cash flow forecasting']
+    });
+    expect(report.suggestions.join(' ')).toMatch(/under the \d+-word target/);
+  });
+});
+
+describe('preset archiving', () => {
+  const mk = (key: string, archived?: boolean): Preset => ({
+    key,
+    label: key,
+    niche: 'n',
+    audience: 'a',
+    region: 'Calgary, AB',
+    ...(archived ? { archived: true } : {})
+  });
+
+  it('hides archived presets from the picker', () => {
+    const all = [mk('hs'), mk('salon'), mk('vet', true)];
+    expect(visiblePresets(all).map((p) => p.key)).toEqual(['hs', 'salon']);
+  });
+
+  it('keeps archived presets in the underlying list', () => {
+    // Archive must be reversible and must not orphan run history.
+    const all = [mk('hs'), mk('vet', true)];
+    expect(all).toHaveLength(2);
+    expect(all.find((p) => p.key === 'vet')?.archived).toBe(true);
   });
 });

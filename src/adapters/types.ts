@@ -32,6 +32,10 @@ export interface GenerationResult {
   leadMagnetName: string;
   leadMagnetText: string;    // flattened magnet content — Uniqueness Registry fingerprint input
   wordCount: number;
+  /** Set when the post is publishable but under the target length. The run
+   *  still reaches review gate ①; the SEO panel shows this as a warning so a
+   *  human decides, instead of the job failing outright. */
+  shortOfTarget?: { words: number; target: number };
   generatorLatencyMs: number;
 }
 

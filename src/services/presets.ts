@@ -27,6 +27,17 @@ export interface Preset {
   topics?: PresetTopic[];
   /** ISO timestamp of the last generation, for the Orchestrator UI. */
   generatedAt?: string;
+  /** Hidden from the picker but kept in the database, so runs that already
+   *  used this preset still show where they came from. Built-ins can only ever
+   *  be archived — deleting one would orphan that history. */
+  archived?: boolean;
+  /** ISO timestamp of archiving, shown in the Archived list. */
+  archivedAt?: string;
+}
+
+/** Presets offered in the picker — everything not archived. */
+export function visiblePresets(all: Preset[]): Preset[] {
+  return all.filter((p) => !p.archived);
 }
 
 export const TOPICS_HS: PresetTopic[] = [
@@ -143,7 +154,11 @@ export async function getSetting<T>(key: string, fallback: T): Promise<T> {
 export async function activePreset(): Promise<Preset> {
   const presets = await getSetting<Preset[]>('presets', []);
   const key = await getSetting<string>('active_preset', 'hs');
-  return presets.find((p) => p.key === key) ?? presets[0] ?? {
+  const selected = presets.find((p) => p.key === key);
+  // An archived preset must not keep driving the auto-runner. If the active one
+  // was archived, fall through to the first visible preset instead.
+  if (selected && !selected.archived) return selected;
+  return visiblePresets(presets)[0] ?? presets[0] ?? {
     key: 'hs',
     label: 'Health & Safety (UK)',
     niche: 'UK health & safety advisory & consultancy firms',

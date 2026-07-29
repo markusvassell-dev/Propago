@@ -88,6 +88,26 @@ export const env = {
   openaiApiKey: required('OPENAI_API_KEY'),
   openaiModel: process.env.OPENAI_MODEL ?? 'gpt-4o',
   generationTimeoutMs: int('GENERATION_TIMEOUT_MS', 120_000),
+  // Output ceiling per completion. This was hardcoded to 4096, which is what
+  // made long posts fail: the article + lead magnet had to share ONE JSON
+  // response, and JSON-escaped markdown is newline-dense, so a 1,200-word post
+  // plus the magnet landed at 2,800–3,400 tokens with almost no headroom. The
+  // model either truncated mid-string (invalid JSON) or self-limited and came
+  // back short. gpt-4o allows 16,384.
+  openaiMaxTokens: int('OPENAI_MAX_TOKENS', 16_000),
+
+  // Article length. `target` is what the prompt asks for and what the SEO
+  // scorer wants. `floor` is the only value that actually FAILS a job — output
+  // shorter than this is broken, not merely thin. Between the two the run goes
+  // to review gate ① with a warning, because parking a run and posting
+  // "Workflow Failed" to Karbon over a 950-word post is a wildly
+  // disproportionate response to a post that is perfectly publishable.
+  blogWords: {
+    target: int('BLOG_MIN_WORDS', 1000),
+    floor: int('BLOG_HARD_MIN_WORDS', 600),
+    // How many times to ask the model to expand a short draft before giving up.
+    maxExpansions: clampInt(process.env.BLOG_MAX_EXPANSIONS, 0, 3, 2)
+  },
   // Structural stub mode: OPENAI_API_KEY is still required (fail-fast on a
   // missing var), but an obvious placeholder (docker-compose local dev / CI)
   // switches the OpenAI adapters to deterministic stub output so the whole

@@ -560,8 +560,19 @@ async function jobGenerate(job: Job): Promise<void> {
     [runId, result.blogTitle, result.metaDescription, result.blogMarkdown, result.leadMagnetUrl, result.wordCount, result.leadMagnetName]
   );
   const genNote = `ChatGPT Business API 200 OK in ${gsecs}s — ${result.wordCount.toLocaleString('en-US')}-word post + LinkedIn/FB/IG + lead magnet · registry: SHA-256 + TF-IDF unique`;
-  await endStage(runId, 'draft', 'done', genNote);
-  await auditMsg(runId, 'api', genNote, 'generation.completed');
+  // A post under the word target is publishable but worth a human's attention:
+  // mark the stage `partial` rather than `done` so it reads as amber in the
+  // pipeline strip, and say so in the audit trail. It does NOT fail the run —
+  // see env.blogWords for why.
+  if (result.shortOfTarget) {
+    const short = `Post is ${result.shortOfTarget.words} words, under the ${result.shortOfTarget.target}-word target — publishable, flagged for review (not a failure)`;
+    await endStage(runId, 'draft', 'partial', `${genNote} · ${short}`);
+    await auditMsg(runId, 'api', genNote, 'generation.completed');
+    await auditMsg(runId, 'system', short, 'generation.short');
+  } else {
+    await endStage(runId, 'draft', 'done', genNote);
+    await auditMsg(runId, 'api', genNote, 'generation.completed');
+  }
   await auditMsg(
     runId,
     'system',

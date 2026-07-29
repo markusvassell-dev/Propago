@@ -21,7 +21,10 @@ export class GenerationError extends Error {
   }
 }
 
-const MIN_WORDS = 1000; // contract: the saga rejects anything shorter
+// TARGET is what we ask for and what the SEO scorer rewards. FLOOR is the only
+// value that fails the job. See env.blogWords for why they are different.
+const TARGET_WORDS = env.blogWords.target;
+const FLOOR_WORDS = env.blogWords.floor;
 
 interface ModelOutput {
   blogTitle?: string;
@@ -45,29 +48,23 @@ export class OpenAIGenerationAdapter implements ContentGenerationProvider {
     if (env.openaiStub) {
       out = stubGenerate(req);
     } else {
-      out = await this.completeJSON<ModelOutput>([
+      // TWO calls, not one. The article and the lead magnet used to share a
+      // single JSON response and therefore a single token budget — the magnet
+      // ate room the article needed, and the article's own length pushed the
+      // response into truncation. Splitting them lets each have the full
+      // ceiling, and a short article no longer costs us the magnet too.
+      const article = await this.completeJSON<ModelOutput>([
         { role: 'system', content: this.systemPrompt(req.brandVoice) },
         { role: 'user', content: this.userPrompt(req) }
       ]);
+      const magnet = await this.completeJSON<{ leadMagnet?: Partial<LeadMagnetContent> }>([
+        { role: 'system', content: this.magnetSystemPrompt(req.brandVoice) },
+        { role: 'user', content: this.magnetUserPrompt(req, article.blogTitle ?? req.topic) }
+      ]);
+      out = { ...article, leadMagnet: magnet.leadMagnet };
     }
 
     let markdown = out.blogMarkdown ?? '';
-
-    // The model sometimes comes up short — expand once before failing the job.
-    if (!env.openaiStub && markdown && wordCount(markdown) < MIN_WORDS) {
-      const expanded = await this.completeJSON<{ blogMarkdown?: string }>([
-        { role: 'system', content: this.systemPrompt(req.brandVoice) },
-        {
-          role: 'user',
-          content:
-            `Expand the following blog post to at least ${MIN_WORDS + 300} words. Keep the structure and voice; deepen each section with concrete, practical detail. ` +
-            `Return STRICT JSON: { "blogMarkdown": string }\n\n${markdown}`
-        }
-      ]);
-      if (expanded.blogMarkdown && wordCount(expanded.blogMarkdown) > wordCount(markdown)) {
-        markdown = expanded.blogMarkdown;
-      }
-    }
 
     if (!markdown) {
       // Malformed 200 — treat as retryable.
@@ -77,9 +74,53 @@ export class OpenAIGenerationAdapter implements ContentGenerationProvider {
         JSON.stringify(out).slice(0, 800)
       );
     }
+
+    // Short draft: ask for more. Each pass sends the current draft back and
+    // asks the model to deepen it, keeping whichever version is longest — the
+    // model occasionally returns a SHORTER "expansion", and silently accepting
+    // that would make extra passes actively harmful.
+    for (let pass = 0; !env.openaiStub && wordCount(markdown) < TARGET_WORDS && pass < env.blogWords.maxExpansions; pass++) {
+      const before = wordCount(markdown);
+      let expanded: { blogMarkdown?: string };
+      try {
+        expanded = await this.completeJSON<{ blogMarkdown?: string }>([
+          { role: 'system', content: this.expandSystemPrompt(req.brandVoice) },
+          {
+            role: 'user',
+            content:
+              `This draft is ${before} words. Expand it to at least ${TARGET_WORDS + 300} words.\n` +
+              'Keep the existing structure, headings and voice. Add depth, not padding: worked examples with real figures, ' +
+              'the specific steps a reader would take, common mistakes and what they cost, and any thresholds or deadlines that apply. ' +
+              'Do not repeat points already made and do not add a second conclusion.\n\n' +
+              `Return STRICT JSON: { "blogMarkdown": string }\n\n${markdown}`
+          }
+        ]);
+      } catch (err) {
+        // An expansion pass is an optimisation. If it fails we still have a
+        // usable draft, so keep it rather than losing the whole generation.
+        console.warn(`[generation] expansion pass ${pass + 1} failed (non-fatal):`, (err as Error).message);
+        break;
+      }
+      if (expanded.blogMarkdown && wordCount(expanded.blogMarkdown) > before) {
+        markdown = expanded.blogMarkdown;
+      } else {
+        break; // no progress — another identical pass will not help
+      }
+    }
+
     const words = wordCount(markdown);
-    if (words < MIN_WORDS) {
-      throw new GenerationError(`Generated post is ${words} words — contract requires ${MIN_WORDS}+`, 200);
+    // Only genuinely broken output fails the job. Anything between the floor
+    // and the target is publishable and goes to review gate ① carrying a
+    // `shortOfTarget` flag, which the SEO panel surfaces — a human decides
+    // whether to approve it, request a revision, or remake it.
+    if (words < FLOOR_WORDS) {
+      throw new GenerationError(
+        `Generated post is only ${words} words — below the ${FLOOR_WORDS}-word floor, treating as broken output`,
+        200
+      );
+    }
+    if (words < TARGET_WORDS) {
+      console.warn(`[generation] post is ${words} words, under the ${TARGET_WORDS} target — flagged for review, not failed`);
     }
 
     // Render + store the lead-magnet PDF. Served by THIS app at /magnets/:id.pdf
@@ -112,6 +153,7 @@ export class OpenAIGenerationAdapter implements ContentGenerationProvider {
         .filter(Boolean)
         .join('\n'),
       wordCount: words,
+      shortOfTarget: words < TARGET_WORDS ? { words, target: TARGET_WORDS } : undefined,
       generatorLatencyMs: Date.now() - started
     };
   }
@@ -141,18 +183,77 @@ export class OpenAIGenerationAdapter implements ContentGenerationProvider {
       '  · Define any technical or tax term in plain language the first time it appears.',
       '  · Write for a busy owner-operator, around a grade 8–9 reading level, without dumbing down the substance.',
       '',
+      // Length is the requirement the model misses most often, so it gets its
+      // own block with a reason attached rather than a clause buried in a
+      // field comment. "Write more" alone produces padding; naming WHAT to add
+      // is what actually produces length worth reading.
+      `LENGTH — this is a hard requirement, not a guideline. The post must be AT LEAST ${TARGET_WORDS + 200} words.`,
+      '  · Cover 4–6 substantial sections. A section is not done in two sentences.',
+      '  · Add depth through specifics: worked examples with real figures, the exact steps to take,',
+      '    thresholds and deadlines that apply, common mistakes and what each one costs.',
+      '  · Never pad with restated points, filler transitions or a second conclusion.',
+      '  · Count as you write. A post under the minimum is rejected and regenerated at cost.',
+      '',
       'Return STRICT JSON with exactly these keys:',
       '{',
       '  "blogTitle": string,                       // compelling, ≤ 60 chars, contains the primary keyword',
       '  "metaDescription": string,                 // 120–155 chars, contains the primary keyword',
-      `  "blogMarkdown": string,                    // the FULL post in Markdown, MINIMUM ${MIN_WORDS + 200} words, 3+ H2 headings, keywords woven in naturally, ends with a short CTA to download the lead magnet`,
+      `  "blogMarkdown": string                     // the FULL post in Markdown, MINIMUM ${TARGET_WORDS + 200} words, 3+ H2 headings, keywords woven in naturally, ends with a short CTA to download the companion checklist`,
+      '}'
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  /** System prompt for the SEPARATE lead-magnet call (see generate()). */
+  private magnetSystemPrompt(brandVoice: string): string {
+    return [
+      `You are the senior content writer for ${env.content.firmDescription}.`,
+      brandVoice ? `BRAND VOICE — follow it exactly in all copy:\n${brandVoice}` : '',
+      `Business-focused, practical, zero fluff. ${env.content.englishVariant}. No exclamation marks. No emoji.`,
+      '',
+      'You write the downloadable checklist that accompanies a blog post. Every item must be',
+      'something the reader can actually do or check — an action, a figure to verify, a deadline',
+      'to diarise. No motivational statements, no restating the blog post.',
+      '',
+      'Return STRICT JSON with exactly these keys:',
+      '{',
       '  "leadMagnet": {',
-      '    "name": string,                          // e.g. "The H&S Consultancy Cash-Flow Checklist" — ends with a format word like Checklist/Guide/Toolkit',
+      '    "name": string,                          // e.g. "The Calgary Trades Cash-Flow Checklist" — ends with a format word like Checklist/Guide/Toolkit',
       '    "subtitle": string,                      // one line',
       '    "sections": [ { "heading": string, "items": [string, ...] } ],  // 3-5 sections, 4-6 actionable items each, full sentences',
       '    "cta": string                            // 1-2 sentence closing call to action for the firm',
       '  }',
       '}'
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  private magnetUserPrompt(req: GenerationRequest, blogTitle: string): string {
+    const [primary] = req.keywords.filter(Boolean);
+    return [
+      `Blog post this checklist accompanies: "${blogTitle}"`,
+      `Topic: ${req.topic}`,
+      primary ? `Primary keyword: "${primary}"` : '',
+      req.tone ? `Tone: ${req.tone}` : '',
+      req.variant
+        ? `This is content set ${req.variant.seq} of ${req.variant.of} — give the checklist a distinct focus from the other sets.`
+        : ''
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  /** Lean system prompt for expansion passes — the full SEO rubric would fight
+   *  the single instruction that matters here, which is "make it longer". */
+  private expandSystemPrompt(brandVoice: string): string {
+    return [
+      `You are the senior content writer for ${env.content.firmDescription}.`,
+      brandVoice ? `BRAND VOICE — follow it exactly:\n${brandVoice}` : '',
+      `Business-focused, practical, zero fluff. ${env.content.englishVariant}. No exclamation marks. No emoji.`,
+      'You expand existing drafts. Preserve every heading and keyword already present.',
+      'Return STRICT JSON: { "blogMarkdown": string }'
     ]
       .filter(Boolean)
       .join('\n');
@@ -194,7 +295,7 @@ export class OpenAIGenerationAdapter implements ContentGenerationProvider {
           model: env.openaiModel,
           response_format: { type: 'json_object' },
           temperature: 0.7,
-          max_tokens: 4096,
+          max_tokens: env.openaiMaxTokens,
           messages
         },
         {

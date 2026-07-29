@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api } from '../lib/api';
+import { api, ApiError } from '../lib/api';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { MicroLabel, Toggle } from '../components/ui';
@@ -15,6 +15,8 @@ interface Preset {
   audience: string;
   region: string;
   builtin?: boolean;
+  archived?: boolean;
+  archivedAt?: string;
 }
 interface RegEntry { title: string; lev: number | null; status: string; run: string; t: number; }
 interface Lead { name: string; email: string; synced: boolean; painField: string; source: string; t: number; }
@@ -43,6 +45,7 @@ export default function Orchestrator() {
   const isAdmin = user?.role === 'admin';
 
   const [presets, setPresets] = useState<Preset[]>([]);
+  const [mgOpen, setMgOpen] = useState(false);
   const [activeKey, setActiveKey] = useState('hs');
   const [niche, setNiche] = useState('');
   const [audience, setAudience] = useState('');
@@ -148,13 +151,44 @@ export default function Orchestrator() {
     setNpMsg({ text: `Added “${label}” and made it active.`, ok: true });
   };
 
+  // Archive / delete go through dedicated endpoints rather than rewriting the
+  // whole presets array from the client: the server owns the built-in lock,
+  // the "at least one visible preset" rule, and re-seating the active preset.
+  const archivePreset = async (key: string) => {
+    const p = presets.find((x) => x.key === key);
+    if (!p) return;
+    try {
+      const r = await api.post<{ activePreset: string | null }>(`/api/presets/${key}/archive`);
+      setPresets(presets.map((x) => (x.key === key ? { ...x, archived: true } : x)));
+      if (r.activePreset) setActiveKey(r.activePreset);
+      setNpMsg({ text: `Archived “${p.label}”. It stays in Archived below — restore it any time.`, ok: true });
+    } catch (err) {
+      setNpMsg({ text: err instanceof ApiError ? String(err.data.message ?? err.message) : 'Archive failed', ok: false });
+    }
+  };
+
+  const unarchivePreset = async (key: string) => {
+    try {
+      await api.post(`/api/presets/${key}/unarchive`);
+      setPresets(presets.map((x) => (x.key === key ? { ...x, archived: false } : x)));
+      setNpMsg({ text: 'Preset restored to the picker.', ok: true });
+    } catch (err) {
+      setNpMsg({ text: err instanceof ApiError ? String(err.data.message ?? err.message) : 'Restore failed', ok: false });
+    }
+  };
+
   const deletePreset = async (key: string) => {
     const p = presets.find((x) => x.key === key);
     if (!p || p.builtin) return;
-    const next = presets.filter((x) => x.key !== key);
-    if (!(await put('presets', next))) return;
-    setPresets(next);
-    if (activeKey === key) await applyPreset('hs');
+    if (!window.confirm(`Delete “${p.label}” permanently? Archived presets can be restored — deleted ones cannot.`)) return;
+    try {
+      const r = await api.del<{ activePreset: string | null }>(`/api/presets/${key}`);
+      setPresets(presets.filter((x) => x.key !== key));
+      if (r.activePreset) setActiveKey(r.activePreset);
+      setNpMsg({ text: `Deleted “${p.label}”.`, ok: true });
+    } catch (err) {
+      setNpMsg({ text: err instanceof ApiError ? String(err.data.message ?? err.message) : 'Delete failed', ok: false });
+    }
   };
 
   // ── Target Industry: research an industry, review, then save as a preset ──
@@ -228,8 +262,10 @@ export default function Orchestrator() {
     ? new Date(schedNext).toLocaleString('en-US', { weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
     : 'Mon 08:00';
 
-  const knownPP = [...new Set([...presets.map((p) => p.niche), ...customPP])];
-  const knownAud = [...new Set([...presets.map((p) => p.audience), ...customAud])];
+  const visible = presets.filter((p) => !p.archived);
+  const archived = presets.filter((p) => p.archived);
+  const knownPP = [...new Set([...visible.map((p) => p.niche), ...customPP])];
+  const knownAud = [...new Set([...visible.map((p) => p.audience), ...customAud])];
 
   return (
     <div>
@@ -247,7 +283,7 @@ export default function Orchestrator() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 13 }}>
             <span className="microlabel">pain point preset</span>
             <select className="nf-input" style={{ width: 'auto', flex: 1 }} value={activeKey} onChange={(e) => applyPreset(e.target.value)}>
-              {presets.map((p) => (
+              {visible.map((p) => (
                 <option key={p.key} value={p.key}>
                   {p.label}{p.builtin ? '' : ' · custom'}
                 </option>
@@ -257,6 +293,97 @@ export default function Orchestrator() {
               {addOpen ? 'Close' : '+ New preset'}
             </button>
           </div>
+
+          {/* ââ Manage presets: archive (reversible) / delete (custom only) ââ */}
+          {isAdmin && (
+            <div style={{ marginTop: 12, border: '1px solid var(--line4)', borderRadius: 8, overflow: 'hidden' }}>
+              <button
+                onClick={() => setMgOpen((v) => !v)}
+                style={{ width: '100%', textAlign: 'left', background: 'var(--bg4)', border: 'none', cursor: 'pointer', padding: '11px 14px', display: 'flex', alignItems: 'center', gap: 8 }}
+              >
+                <span className="microlabel" style={{ color: 'var(--tx)' }}>
+                  Manage presets â {visible.length} active{archived.length ? ` · ${archived.length} archived` : ''}
+                </span>
+                <span style={{ marginLeft: 'auto', color: 'var(--tx3)', fontSize: 12 }}>{mgOpen ? '▾' : '▸'}</span>
+              </button>
+
+              {mgOpen && (
+                <div style={{ padding: '13px 15px' }}>
+                  <p style={{ fontSize: 11.5, color: 'var(--tx2)', margin: '0 0 10px', lineHeight: 1.6 }}>
+                    Archiving hides a preset from the picker but keeps it, so past runs still show where they came from — restore it any time.
+                    Deleting is permanent and only available for custom presets; the two built-ins can only be archived.
+                  </p>
+
+                  {visible.map((p) => (
+                    <div
+                      key={p.key}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--line2)' }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 500 }}>
+                          {p.label}
+                          {p.key === activeKey && (
+                            <span className="pill" style={{ marginLeft: 7, color: 'var(--grn)', background: 'rgba(19,122,91,.12)' }}>active</span>
+                          )}
+                          {p.builtin && (
+                            <span className="pill" style={{ marginLeft: 7, color: 'var(--tx3)', background: 'var(--bg5)' }}>built-in</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--tx3)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {p.audience} · {p.region}
+                        </div>
+                      </div>
+                      <button
+                        className="btn btn-ghost"
+                        style={{ padding: '5px 10px', fontSize: 11 }}
+                        onClick={() => archivePreset(p.key)}
+                        title="Hide from the picker, keep the history"
+                      >
+                        Archive
+                      </button>
+                      {!p.builtin && (
+                        <button
+                          className="btn btn-red"
+                          style={{ padding: '5px 10px', fontSize: 11 }}
+                          onClick={() => deletePreset(p.key)}
+                          title="Permanently remove — cannot be undone"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  ))}
+
+                  {archived.length > 0 && (
+                    <>
+                      <MicroLabel style={{ marginTop: 14 }}>Archived · {archived.length}</MicroLabel>
+                      {archived.map((p) => (
+                        <div
+                          key={p.key}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--line2)', opacity: 0.72 }}
+                        >
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 12, fontWeight: 500 }}>{p.label}</div>
+                            <div style={{ fontSize: 10, color: 'var(--tx3)', marginTop: 2 }}>
+                              archived{p.archivedAt ? ` ${fmtAgo(new Date(p.archivedAt).getTime())}` : ''}
+                            </div>
+                          </div>
+                          <button className="btn btn-ghost" style={{ padding: '5px 10px', fontSize: 11 }} onClick={() => unarchivePreset(p.key)}>
+                            Restore
+                          </button>
+                          {!p.builtin && (
+                            <button className="btn btn-red" style={{ padding: '5px 10px', fontSize: 11 }} onClick={() => deletePreset(p.key)}>
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ── Target Industry: auto-research an industry into a preset ── */}
           {isAdmin && (

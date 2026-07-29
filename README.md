@@ -73,6 +73,8 @@ triggered → generating → deploying → seo_review ⇄ revision/remake   (gat
   any blocking step → failed  (retries exhausted → "Workflow Failed" on Karbon timeline)
 ```
 
+**Article length.** `BLOG_MIN_WORDS` (default 1000) is the *target* the prompt asks for and the SEO scorer rewards. `BLOG_HARD_MIN_WORDS` (default 600) is the only value that actually fails a job — between the two the run reaches gate 1 with the draft stage marked `partial` and a warning in the SEO panel, because parking a run and posting "Workflow Failed" to Karbon over a 950-word post is disproportionate to a post that is perfectly publishable. The article and the lead magnet are generated in **separate** OpenAI calls so they no longer compete for one response's token budget, and a short draft gets up to `BLOG_MAX_EXPANSIONS` (default 2) expansion passes first.
+
 `generating` internally covers four sub-steps the dashboard renders as separate pipeline stages (DESIGN_SPEC.md §2): research (SerpAPI web/news search → ChatGPT pain-point extraction with the Levenshtein > 0.7 duplicate guard; with a real `SERPAPI_KEY` the extract is grounded in live sources with real citations, otherwise it runs GPT-only), draft generation, the Uniqueness Registry check (SHA-256 exact + TF-IDF cosine ≥ 0.82 ⇒ blocked and regenerated), and the auto-SEO loop (score < threshold ⇒ suggestions applied and regenerated, max 3 loops).
 
 Every transition is a guarded `UPDATE … WHERE status = <expected>`: a second reviewer, a double-click, or a replayed job gets 0 rows and a `409 Conflict` — never a silent overwrite. Auto-approve (configurable threshold, default 80) applies to gate 1 only.
