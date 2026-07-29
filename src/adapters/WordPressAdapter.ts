@@ -14,9 +14,14 @@ import { renderElementThemeHtml } from '../services/blogHtml';
 // elementaccounting.ca/blog/ (rule 12): the adapter ships clean semantic
 // markup (h2 headings, ul lists, figures) via renderElementThemeHtml and the
 // theme supplies all styling — Arial type, greige background, green headings,
-// hero meta line, footer CTA band. Set the post's category + featured image
-// in WP admin (or extend the payload with `categories`/`featured_media`) —
-// the theme's "In {Category} • {Date} • {N} Minutes" line reads from them.
+// hero meta line, footer CTA band.
+//
+// TAGS AND CATEGORY are sent as real WordPress terms, not markup. The tag row
+// and social-share buttons that close every hand-written post are theme output
+// driven by the taxonomy, so a generated post only ends the same way if the
+// terms are actually assigned. The category also feeds the theme's
+// "In {Category} • {Date} • {N} Minutes" hero line and the permalink.
+// Featured image still has to be set in WP admin (or via `featured_media`).
 // Retries/backoff are BullMQ's job — this adapter throws clean errors.
 
 export class WordPressAdapter implements CmsPublisher {
@@ -27,6 +32,51 @@ export class WordPressAdapter implements CmsPublisher {
     return `Basic ${token}`;
   }
 
+  /**
+   * Turns term NAMES into the term IDs the REST API requires, creating any that
+   * don't exist yet. Assigning real terms is what makes the theme render its
+   * native tag row and social-share buttons beneath the post — those are theme
+   * output driven by the taxonomy, not markup we could put in the body.
+   *
+   * Best-effort: a term that can't be resolved or created is skipped rather
+   * than failing the publish. A post with one missing tag is still a good post.
+   */
+  private async resolveTerms(taxonomy: 'tags' | 'categories', names: string[]): Promise<number[]> {
+    const ids: number[] = [];
+    for (const raw of names) {
+      const name = raw.trim();
+      if (!name) continue;
+      try {
+        const found = await axios.get(`${env.wordpress.baseUrl}/wp-json/wp/v2/${taxonomy}`, {
+          params: { search: name, per_page: 100 },
+          headers: { Authorization: this.authHeader() },
+          timeout: 15_000
+        });
+        const hit = (found.data as Array<{ id: number; name: string }>).find(
+          (t) => t.name.toLowerCase() === name.toLowerCase()
+        );
+        if (hit) {
+          ids.push(hit.id);
+          continue;
+        }
+        const created = await axios.post(
+          `${env.wordpress.baseUrl}/wp-json/wp/v2/${taxonomy}`,
+          { name },
+          { headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json' }, timeout: 15_000 }
+        );
+        ids.push(created.data.id);
+      } catch (err) {
+        const e = err as { response?: { data?: { data?: { term_id?: number } } } };
+        // WP returns 400 term_exists with the existing id when a search miss
+        // races a create — reuse it instead of dropping the term.
+        const existing = e.response?.data?.data?.term_id;
+        if (existing) ids.push(existing);
+        else console.warn(`[wordpress] could not resolve ${taxonomy} "${name}" (skipped):`, (err as Error).message);
+      }
+    }
+    return ids;
+  }
+
   async publishPost(input: {
     title: string;
     markdown: string;
@@ -34,6 +84,9 @@ export class WordPressAdapter implements CmsPublisher {
     leadMagnetUrl: string;
     existingPostId?: string;
     topicSlugSource?: string; // slug derives from the TOPIC (spec §2 slug rule), not the title
+    tags?: string[];          // become real WP terms → theme renders its tag row + share buttons
+    category?: string;
+    leadMagnetName?: string;
   }): Promise<CmsPublishResult> {
     if (!env.wordpress.baseUrl) {
       // Structural stub for local dev: log the exact payload we would send.
@@ -52,13 +105,15 @@ export class WordPressAdapter implements CmsPublisher {
     }
 
     const html = renderElementThemeHtml(input.markdown);
-    // CTA block linking the lead magnet is appended to the post body itself.
-    const content =
-      html +
-      `\n<hr />\n<p><strong>Free download:</strong> <a href="${input.leadMagnetUrl}">Get the checklist (PDF)</a></p>`;
+    const content = html + magnetCta(input.leadMagnetUrl, input.leadMagnetName);
 
     const base = `${env.wordpress.baseUrl}/wp-json/wp/v2/posts`;
     const url = input.existingPostId ? `${base}/${input.existingPostId}` : base;
+
+    // Resolved before the post is created so the terms are attached from the
+    // start — the theme's tag row and share buttons render off these.
+    const tags = input.tags?.length ? await this.resolveTerms('tags', input.tags) : [];
+    const categories = input.category ? await this.resolveTerms('categories', [input.category]) : [];
 
     const res = await axios.post(
       url,
@@ -66,6 +121,8 @@ export class WordPressAdapter implements CmsPublisher {
         title: input.title,
         content,
         excerpt: input.metaDescription,
+        ...(tags.length ? { tags } : {}),
+        ...(categories.length ? { categories } : {}),
         // DRAFT, not publish — gate ① approval flips it via publishLive().
         status: 'draft'
       },
@@ -129,6 +186,34 @@ export class WordPressAdapter implements CmsPublisher {
       validateStatus: (s) => s >= 200 && s < 300
     });
   }
+}
+
+/**
+ * The in-post route to the lead magnet, and the ONLY one an organic search
+ * visitor has — ads and email only reach people already in the funnel. It was
+ * a bare <hr /> plus one sentence, which read as tacked on after the article;
+ * this is the same link presented as a deliberate block, using the theme's own
+ * palette (greige panel, muted-green rule, copper button) so it looks native
+ * rather than pasted in.
+ */
+function magnetCta(url: string, name?: string): string {
+  const label = (name ?? '').trim() || 'the checklist';
+  return [
+    '',
+    '<div class="propago-magnet-cta" style="background:#F4F1EC;border-left:4px solid #597363;padding:22px 26px;margin:34px 0">',
+    '  <p style="margin:0 0 6px;font-weight:700;color:#3C4C3C;letter-spacing:.03em">FREE DOWNLOAD</p>',
+    `  <p style="margin:0 0 16px;color:#3F3A3B">${escapeHtml(label)} — the checklist our advisory team works through with clients.</p>`,
+    `  <a href="${escapeAttr(url)}" style="display:inline-block;background:#BC7C54;color:#ffffff;text-decoration:none;font-weight:700;font-size:13px;letter-spacing:.05em;padding:12px 22px">GET THE CHECKLIST (PDF)</a>`,
+    '</div>'
+  ].join('\n');
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
 function slugify(s: string): string {
