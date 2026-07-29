@@ -686,7 +686,13 @@ async function jobDeployDraft(job: Job): Promise<void> {
     topicSlugSource: run.topic,
     // A revision loop re-runs this stage; update the SAME post rather than
     // leaving an orphan draft behind on every pass.
-    existingPostId: d.cms_post_id ?? undefined
+    existingPostId: d.cms_post_id ?? undefined,
+    // The run's keywords become real WordPress tags, which is what makes the
+    // theme render its tag row + share buttons under the post — the same
+    // ending hand-written posts have.
+    tags: run.keywords,
+    category: env.wordpress.category || undefined,
+    leadMagnetName: d.magnet_name ?? undefined
   });
 
   await query(
