@@ -156,7 +156,13 @@ export const env = {
   wordpress: {
     baseUrl: process.env.WORDPRESS_BASE_URL ?? '',
     username: process.env.WORDPRESS_USERNAME ?? '',
-    appPassword: process.env.WORDPRESS_APP_PASSWORD ?? ''
+    appPassword: process.env.WORDPRESS_APP_PASSWORD ?? '',
+    // Category assigned to every generated post. The Element theme prints
+    // "In {Category} · {Date} · {N} Minutes" in the hero and uses the category
+    // in the permalink (posts live under /accountants/, not /blog/), so leaving
+    // this blank makes generated posts look different from hand-written ones.
+    // Blank ⇒ WordPress falls back to its default category.
+    category: process.env.WORDPRESS_CATEGORY ?? ''
   },
 
   meta: {
